@@ -87,6 +87,12 @@ tmuxctl add codex --every 15m --message "check status and fix if something is br
 
 Recurring jobs also store an Enter delay. By default that is `200ms`, and you can override it with `--enter-delay-ms`.
 
+Example: send an automated follow-up to `rk-codex` every 30 minutes:
+
+```bash
+tmuxctl add rk-codex --every 30m --message "If not active, pick 2 next tasks. This is an automated message."
+```
+
 Example: check a worker session every 30 minutes and unblock stalled progress:
 
 ```bash
