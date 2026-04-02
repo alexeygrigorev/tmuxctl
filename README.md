@@ -13,14 +13,29 @@ Small tmux session controller with recurring sends.
 
 ## Install
 
-For local development with `uv`:
+Install from GitHub with `uv`:
 
 ```bash
-uv sync
-uv run tmuxctl --help
+uv tool install git+https://github.com/alexeygrigorev/tmuxctl.git
+tmuxctl --help
 ```
 
-For test and build tooling:
+Install from a local checkout in editable mode:
+
+```bash
+git clone https://github.com/alexeygrigorev/tmuxctl.git
+cd tmuxctl
+uv tool install -e .
+tmuxctl --help
+```
+
+If you update the local checkout later, reinstall with:
+
+```bash
+uv tool install -e . --force
+```
+
+For development, tests, and builds:
 
 ```bash
 uv sync --group dev
@@ -33,33 +48,33 @@ uv build
 List sessions:
 
 ```bash
-uv run tmuxctl list
-uv run tmuxctl recent --limit 10
-uv run tmuxctl recent --limit 10 --by activity
+tmuxctl list
+tmuxctl recent --limit 10
+tmuxctl recent --limit 10 --by activity
 ```
 
 Attach to a session directly or jump to the newest one:
 
 ```bash
-uv run tmuxctl attach codex
-uv run tmuxctl attach-last
-uv run tmuxctl attach-last --by activity
-uv run tmuxctl attach-recent 2
-uv run tmuxctl attach-recent 3 --by activity
+tmuxctl attach codex
+tmuxctl attach-last
+tmuxctl attach-last --by activity
+tmuxctl attach-recent 2
+tmuxctl attach-recent 3 --by activity
 ```
 
 There are also short hidden aliases for the most recent sessions:
 
 ```bash
-uv run tmuxctl a1
-uv run tmuxctl a2
-uv run tmuxctl a3
+tmuxctl a1
+tmuxctl a2
+tmuxctl a3
 ```
 
 Send one message now:
 
 ```bash
-uv run tmuxctl send codex "check status and fix if something is broken or stuck"
+tmuxctl send codex "check status and fix if something is broken or stuck"
 ```
 
 By default, `tmuxctl send` waits `200ms` before pressing Return. Override that with `--enter-delay-ms` or disable Return with `--no-enter`.
@@ -67,7 +82,7 @@ By default, `tmuxctl send` waits `200ms` before pressing Return. Override that w
 Create a recurring job:
 
 ```bash
-uv run tmuxctl add codex --every 15m --message "check status and fix if something is broken or stuck"
+tmuxctl add codex --every 15m --message "check status and fix if something is broken or stuck"
 ```
 
 Recurring jobs also store an Enter delay. By default that is `200ms`, and you can override it with `--enter-delay-ms`.
@@ -75,26 +90,26 @@ Recurring jobs also store an Enter delay. By default that is `200ms`, and you ca
 List jobs and logs:
 
 ```bash
-uv run tmuxctl jobs
-uv run tmuxctl logs --limit 20
+tmuxctl jobs
+tmuxctl logs --limit 20
 ```
 
 Run the scheduler:
 
 ```bash
-uv run tmuxctl daemon
+tmuxctl daemon
 ```
 
 ## Shortcuts
 
 Useful shortcuts for hopping between recent sessions:
 
-- `uv run tmuxctl attach-last`
-- `uv run tmuxctl attach-recent 2`
-- `uv run tmuxctl attach-recent 3`
-- `uv run tmuxctl a1`
-- `uv run tmuxctl a2`
-- `uv run tmuxctl a3`
+- `tmuxctl attach-last`
+- `tmuxctl attach-recent 2`
+- `tmuxctl attach-recent 3`
+- `tmuxctl a1`
+- `tmuxctl a2`
+- `tmuxctl a3`
 
 ## How Scheduling Works
 
