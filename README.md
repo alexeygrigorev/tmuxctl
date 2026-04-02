@@ -20,6 +20,14 @@ uv sync
 uv run tmuxctl --help
 ```
 
+For test and build tooling:
+
+```bash
+uv sync --group dev
+uv run pytest
+uv build
+```
+
 ## Usage
 
 List sessions:
