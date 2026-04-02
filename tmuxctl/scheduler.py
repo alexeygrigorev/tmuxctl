@@ -31,6 +31,9 @@ def run_job(conn, job: Job) -> tuple[bool, str | None]:
         job_id=job.id,
         session_name=job.session_name,
         message=job.message,
+        trigger_type="scheduled",
+        send_enter=job.send_enter,
+        enter_delay_ms=job.enter_delay_ms,
         status=status,
         error_text=error_text,
     )

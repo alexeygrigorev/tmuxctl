@@ -46,6 +46,9 @@ def init_db(conn: sqlite3.Connection) -> None:
             job_id INTEGER NULL,
             session_name TEXT NOT NULL,
             message TEXT NOT NULL,
+            trigger_type TEXT NOT NULL DEFAULT 'manual',
+            send_enter INTEGER NOT NULL DEFAULT 1,
+            enter_delay_ms INTEGER NOT NULL DEFAULT 200,
             status TEXT NOT NULL,
             error_text TEXT NULL,
             created_at TEXT NOT NULL
@@ -59,6 +62,22 @@ def init_db(conn: sqlite3.Connection) -> None:
     if "enter_delay_ms" not in columns:
         conn.execute(
             "ALTER TABLE jobs ADD COLUMN enter_delay_ms INTEGER NOT NULL DEFAULT 200"
+        )
+    log_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(logs)").fetchall()
+    }
+    if "trigger_type" not in log_columns:
+        conn.execute(
+            "ALTER TABLE logs ADD COLUMN trigger_type TEXT NOT NULL DEFAULT 'manual'"
+        )
+    if "send_enter" not in log_columns:
+        conn.execute(
+            "ALTER TABLE logs ADD COLUMN send_enter INTEGER NOT NULL DEFAULT 1"
+        )
+    if "enter_delay_ms" not in log_columns:
+        conn.execute(
+            "ALTER TABLE logs ADD COLUMN enter_delay_ms INTEGER NOT NULL DEFAULT 200"
         )
     conn.commit()
 
@@ -85,6 +104,9 @@ def _log_from_row(row: sqlite3.Row) -> LogEntry:
         job_id=row["job_id"],
         session_name=row["session_name"],
         message=row["message"],
+        trigger_type=row["trigger_type"],
+        send_enter=bool(row["send_enter"]),
+        enter_delay_ms=row["enter_delay_ms"],
         status=row["status"],
         error_text=row["error_text"],
         created_at=row["created_at"],
@@ -222,6 +244,9 @@ def insert_log(
     *,
     session_name: str,
     message: str,
+    trigger_type: str,
+    send_enter: bool,
+    enter_delay_ms: int,
     status: str,
     job_id: int | None = None,
     error_text: str | None = None,
@@ -229,10 +254,23 @@ def insert_log(
     created_at = to_timestamp(utcnow())
     cursor = conn.execute(
         """
-        INSERT INTO logs (job_id, session_name, message, status, error_text, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO logs (
+            job_id, session_name, message, trigger_type, send_enter, enter_delay_ms,
+            status, error_text, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (job_id, session_name, message, status, error_text, created_at),
+        (
+            job_id,
+            session_name,
+            message,
+            trigger_type,
+            int(send_enter),
+            enter_delay_ms,
+            status,
+            error_text,
+            created_at,
+        ),
     )
     conn.commit()
     row = conn.execute("SELECT * FROM logs WHERE id = ?", (cursor.lastrowid,)).fetchone()

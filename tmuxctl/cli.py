@@ -46,13 +46,16 @@ def _print_jobs(jobs: list[Job]) -> None:
 
 
 def _print_logs(entries: list[LogEntry]) -> None:
-    typer.echo("TIME                 JOB  SESSION  STATUS   ERROR")
+    typer.echo("TIME                 SRC        JOB  SESSION        ENTER DELAY  STATUS   ERROR")
     for entry in entries:
         job_id = "-" if entry.job_id is None else str(entry.job_id)
         error = entry.error_text or ""
+        source = entry.trigger_type
+        enter = "yes" if entry.send_enter else "no"
+        delay = entry.enter_delay_ms if entry.send_enter else 0
         typer.echo(
-            f"{display_timestamp(entry.created_at):<20} {job_id:<4} "
-            f"{entry.session_name:<8} {entry.status:<8} {error}"
+            f"{display_timestamp(entry.created_at):<20} {source:<10} {job_id:<4} "
+            f"{entry.session_name:<14} {enter:<5} {delay:<6} {entry.status:<8} {error}"
         )
 
 
@@ -116,6 +119,9 @@ def send(
             conn,
             session_name=session_name,
             message=message,
+            trigger_type="manual",
+            send_enter=not no_enter,
+            enter_delay_ms=enter_delay_ms,
             status="failed",
             error_text=f"tmux session '{session_name}' was not found",
         )
@@ -137,12 +143,23 @@ def send(
             conn,
             session_name=session_name,
             message=message,
+            trigger_type="manual",
+            send_enter=not no_enter,
+            enter_delay_ms=enter_delay_ms,
             status="failed",
             error_text=str(exc),
         )
         _fail(str(exc))
 
-    storage.insert_log(conn, session_name=session_name, message=message, status="success")
+    storage.insert_log(
+        conn,
+        session_name=session_name,
+        message=message,
+        trigger_type="manual",
+        send_enter=not no_enter,
+        enter_delay_ms=enter_delay_ms,
+        status="success",
+    )
     typer.echo(f"Sent message to {session_name}")
 
 

@@ -24,6 +24,9 @@ class LogEntry:
     job_id: int | None
     session_name: str
     message: str
+    trigger_type: str
+    send_enter: bool
+    enter_delay_ms: int
     status: str
     error_text: str | None
     created_at: str

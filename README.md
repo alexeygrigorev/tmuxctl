@@ -87,12 +87,20 @@ tmuxctl add codex --every 15m --message "check status and fix if something is br
 
 Recurring jobs also store an Enter delay. By default that is `200ms`, and you can override it with `--enter-delay-ms`.
 
+Example: check a worker session every 30 minutes and unblock stalled progress:
+
+```bash
+tmuxctl add lnewly-57 --every 30m --message "Status check for litehive: report current progress, current task, and the last meaningful change. Check whether progress is stalled, not whether you personally feel stuck. Identify blockers, lack of movement, repeated retries, failing commands, broken states, or missing dependencies. If progress is stalled, choose the best next concrete action to unblock litehive and execute it. Fix any problems you can fix now, then continue the work and summarize what changed."
+```
+
 List jobs and logs:
 
 ```bash
 tmuxctl jobs
 tmuxctl logs --limit 20
 ```
+
+Logs include the target session, whether the send was manual or scheduled, whether Return was sent, the Enter delay used, and any recorded error text.
 
 Run the scheduler:
 
