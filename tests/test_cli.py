@@ -7,7 +7,7 @@ from typer.testing import CliRunner
 
 from tmuxctl import cli
 from tmuxctl.cli import app
-from tmuxctl.models import Job
+from tmuxctl.models import Job, SessionInfo
 
 
 runner = CliRunner()
@@ -139,10 +139,108 @@ def test_jobs_shows_inline_and_file_sources(monkeypatch) -> None:
     assert "prompts/rk-codex-progress.txt" in result.output
 
 
+def test_list_shows_sorted_session_table(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tmuxctl.cli.tmux_api.list_session_info",
+        lambda: [
+            SessionInfo(name="older", created_at=100, activity_at=300),
+            SessionInfo(name="newer", created_at=200, activity_at=200),
+        ],
+    )
+
+    result = runner.invoke(app, ["list"])
+
+    assert result.exit_code == 0
+    assert "IDX  SESSION               CREATED" in result.output
+    assert "1    newer" in result.output
+    assert "2    older" in result.output
+
+
+def test_kill_by_session_name(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_kill_session(session_name: str) -> None:
+        captured["session_name"] = session_name
+
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.kill_session", fake_kill_session)
+
+    result = runner.invoke(app, ["kill", "rk-codex", "--yes"])
+
+    assert result.exit_code == 0
+    assert captured["session_name"] == "rk-codex"
+    assert "Killed session rk-codex" in result.output
+
+
+def test_kill_by_numeric_id(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "tmuxctl.cli.tmux_api.list_session_info",
+        lambda: [
+            SessionInfo(name="older", created_at=100, activity_at=300),
+            SessionInfo(name="newer", created_at=200, activity_at=200),
+        ],
+    )
+
+    def fake_kill_session(session_name: str) -> None:
+        captured["session_name"] = session_name
+
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.kill_session", fake_kill_session)
+
+    result = runner.invoke(app, ["kill", "2", "--yes"])
+
+    assert result.exit_code == 0
+    assert captured["session_name"] == "older"
+
+
+def test_kill_prompts_for_confirmation(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_kill_session(session_name: str) -> None:
+        captured["session_name"] = session_name
+
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.kill_session", fake_kill_session)
+
+    result = runner.invoke(app, ["kill", "rk-codex"], input="y\n")
+
+    assert result.exit_code == 0
+    assert captured["session_name"] == "rk-codex"
+
+
+def test_kill_aborts_without_confirmation(monkeypatch) -> None:
+    called = {"kill": False}
+
+    def fake_kill_session(session_name: str) -> None:
+        called["kill"] = True
+
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.kill_session", fake_kill_session)
+
+    result = runner.invoke(app, ["kill", "rk-codex"], input="n\n")
+
+    assert result.exit_code == 1
+    assert called["kill"] is False
+    assert "Aborted." in result.output
+
+
 def test_complete_session_names_filters_matches(monkeypatch) -> None:
     monkeypatch.setattr("tmuxctl.cli.tmux_api.list_sessions", lambda: ["rk-codex", "rk-worker", "other"])
 
     assert cli._complete_session_names("rk-") == ["rk-codex", "rk-worker"]
+
+
+def test_root_group_shell_complete_adds_sessions(monkeypatch) -> None:
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.list_sessions", lambda: ["rk-codex", "rk-worker", "other"])
+
+    values = [item.value for item in cli._extend_root_completion([], "rk-")]
+    assert "rk-codex" in values
+    assert "rk-worker" in values
+
+
+def test_root_group_shell_complete_adds_colon_sessions(monkeypatch) -> None:
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.list_sessions", lambda: ["rk-codex", "rk-worker", "other"])
+
+    values = [item.value for item in cli._extend_root_completion([], ":rk-")]
+    assert ":rk-codex" in values
+    assert ":rk-worker" in values
 
 
 def test_main_rewrites_colon_shortcut(monkeypatch) -> None:
@@ -157,3 +255,53 @@ def test_main_rewrites_colon_shortcut(monkeypatch) -> None:
     cli.main()
 
     assert captured["args"] == ["create-or-attach", "rk-codex"]
+
+
+def test_main_rewrites_plain_session_shortcut(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_app(*, args):
+        captured["args"] = args
+
+    monkeypatch.setattr(cli, "app", fake_app)
+    monkeypatch.setattr(sys, "argv", ["tmuxctl", "rk-codex"])
+
+    cli.main()
+
+    assert captured["args"] == ["attach", "rk-codex"]
+
+
+def test_main_rewrites_numeric_shortcut(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_app(*, args):
+        captured["args"] = args
+
+    monkeypatch.setattr(cli, "app", fake_app)
+    monkeypatch.setattr(sys, "argv", ["tmuxctl", "12"])
+
+    cli.main()
+
+    assert captured["args"] == ["attach-recent", "12"]
+
+
+def test_app_shows_help_without_command() -> None:
+    result = runner.invoke(app, ["--help"])
+
+    assert result.exit_code == 0
+    assert "Usage: " in result.output
+    assert "COMMAND [ARGS]..." in result.output
+
+
+def test_main_shows_help_without_command(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_app(*, args):
+        captured["args"] = args
+
+    monkeypatch.setattr(cli, "app", fake_app)
+    monkeypatch.setattr(sys, "argv", ["tmuxctl"])
+
+    cli.main()
+
+    assert captured["args"] == ["--help"]

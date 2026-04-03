@@ -26,6 +26,7 @@ dependencies = [
 
 [project.scripts]
 tmuxctl = "tmuxctl.cli:main"
+t = "tmuxctl.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/alexeygrigorev/tmuxctl"

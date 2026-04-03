@@ -116,6 +116,16 @@ def create_or_attach_session(session_name: str) -> None:
         attach_session(session_name)
 
 
+def kill_session(session_name: str) -> None:
+    if not session_exists(session_name):
+        raise TmuxSessionNotFoundError(f"tmux session '{session_name}' was not found")
+
+    result = _run_tmux(["kill-session", "-t", session_name], check=False)
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        raise TmuxCommandError(stderr or f"failed to kill '{session_name}'")
+
+
 def send_keys(
     session_name: str,
     message: str,

@@ -57,36 +57,51 @@ uv run pytest
 uv build
 ```
 
+If you want this checkout's virtualenv binaries on your shell `PATH`, run:
+
+```bash
+./install.sh
+```
+
+That appends this repo's `.venv/bin` to `~/.bashrc` and does nothing if the line is already present.
+
 ## Usage
 
 List sessions:
 
 ```bash
 tmuxctl list
+tmuxctl l
+tmuxctl r
 tmuxctl recent --limit 10
-tmuxctl recent --limit 10 --by activity
 ```
 
 Attach to a session directly or jump to the newest one:
 
 ```bash
+tmuxctl codex
 tmuxctl attach codex
 tmuxctl create-or-attach codex
 tmuxctl :codex
+tmuxctl kill codex
+tmuxctl kill 2
+tmuxctl k 2 --yes
 tmuxctl attach-last
-tmuxctl attach-last --by activity
 tmuxctl attach-recent 2
-tmuxctl attach-recent 3 --by activity
+tmuxctl attach-recent 3
 ```
 
-`tmuxctl :codex` is shorthand for `tmuxctl create-or-attach codex`.
+`tmuxctl codex` resolves to `tmuxctl attach codex`.
+`tmuxctl :codex` resolves to `tmuxctl create-or-attach codex`.
+`tmuxctl kill NAME_OR_ID` kills a session by name or by the numeric ID shown in `tmuxctl list`.
 
 There are also short hidden aliases for the most recent sessions:
 
 ```bash
-tmuxctl a1
-tmuxctl a2
-tmuxctl a3
+tmuxctl 1
+tmuxctl 2
+tmuxctl 3
+tmuxctl 10
 ```
 
 Send one message now:
@@ -171,12 +186,14 @@ tmuxctl daemon
 
 Useful shortcuts for hopping between recent sessions:
 
+- `tmuxctl 1`
+- `tmuxctl 2`
+- `tmuxctl 3`
+- `tmuxctl 10`
+- `tmuxctl r`
 - `tmuxctl attach-last`
 - `tmuxctl attach-recent 2`
 - `tmuxctl attach-recent 3`
-- `tmuxctl a1`
-- `tmuxctl a2`
-- `tmuxctl a3`
 
 ## How Scheduling Works
 
@@ -221,3 +238,12 @@ tmuxctl --show-completion bash
 ```
 
 Session-taking commands also complete existing tmux session names in Bash.
+At the top level, Bash completion also suggests plain session names and `:session` shortcuts.
+
+If you work from this checkout often and want its virtualenv binaries on your `PATH`, run:
+
+```bash
+./install.sh
+```
+
+That appends this repo's `.venv/bin` to `~/.bashrc` and leaves the file unchanged if the line is already present.

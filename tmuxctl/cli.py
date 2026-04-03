@@ -6,12 +6,47 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from click.shell_completion import CompletionItem
+from typer.core import TyperGroup
 
 from tmuxctl import scheduler, storage, tmux_api
 from tmuxctl.models import Job, LogEntry, SessionInfo
 from tmuxctl.utils import display_timestamp, display_unix_timestamp, format_interval, parse_interval
 
-app = typer.Typer(help="Control tmux sessions and recurring messages.")
+ROOT_COMMAND_NAMES = {
+    "list",
+    "l",
+    "recent",
+    "r",
+    "send",
+    "attach",
+    "create-or-attach",
+    "kill",
+    "k",
+    "attach-last",
+    "attach-recent",
+    "add",
+    "jobs",
+    "pause",
+    "resume",
+    "remove",
+    "edit",
+    "logs",
+    "daemon",
+}
+
+
+class RootGroup(TyperGroup):
+    def shell_complete(self, ctx, incomplete: str) -> list[CompletionItem]:
+        items = list(super().shell_complete(ctx, incomplete))
+        return _extend_root_completion(items, incomplete)
+
+
+app = typer.Typer(
+    cls=RootGroup,
+    help="Control tmux sessions and recurring messages.",
+    no_args_is_help=True,
+)
 
 
 class SessionOrder(str, Enum):
@@ -34,6 +69,27 @@ def _complete_session_names(incomplete: str) -> list[str]:
     except Exception:
         return []
     return [session for session in sessions if session.startswith(incomplete)]
+
+
+def _extend_root_completion(
+    items: list[CompletionItem],
+    incomplete: str,
+) -> list[CompletionItem]:
+    seen = {item.value for item in items}
+
+    if incomplete.startswith(":"):
+        session_prefix = incomplete[1:]
+        session_values = [f":{name}" for name in _complete_session_names(session_prefix)]
+    else:
+        session_values = _complete_session_names(incomplete)
+
+    for value in session_values:
+        if value in seen:
+            continue
+        items.append(CompletionItem(value))
+        seen.add(value)
+
+    return items
 
 
 def _resolve_message(
@@ -113,28 +169,49 @@ def _sort_sessions(sessions: list[SessionInfo], by: SessionOrder) -> list[Sessio
 
 
 def _print_recent_sessions(sessions: list[SessionInfo], by: SessionOrder) -> None:
-    typer.echo("IDX  SESSION               CREATED              LAST ACTIVE          ATTACH")
+    typer.echo("IDX  SESSION               CREATED")
     for index, session in enumerate(sessions, start=1):
         typer.echo(
-            f"{index:<4} {session.name:<21} "
-            f"{display_unix_timestamp(session.created_at):<20} "
-            f"{display_unix_timestamp(session.activity_at):<20} "
-            f"tmuxctl attach {session.name}"
+            f"{index:<4} {session.name:<21} {display_unix_timestamp(session.created_at):<20}"
         )
     if sessions:
         typer.echo(f"\nNewest by {by.value}: tmuxctl attach-last --by {by.value}")
         typer.echo(f"Nth recent: tmuxctl attach-recent <n> --by {by.value}")
 
 
+def _resolve_session_target(target: str, by: SessionOrder) -> str:
+    if target.isdigit():
+        index = int(target)
+        if index < 1:
+            _fail("index must be 1 or greater")
+        try:
+            sessions = _sort_sessions(tmux_api.list_session_info(), by)
+        except Exception as exc:
+            _fail(str(exc))
+        if not sessions:
+            _fail("no tmux sessions found")
+        if index > len(sessions):
+            _fail(f"only {len(sessions)} tmux session(s) found")
+        return sessions[index - 1].name
+    return target
+
+
 @app.command("list")
-def list_sessions() -> None:
+def list_sessions(
+    by: Annotated[SessionOrder, typer.Option("--by", help="Sort by session creation time or last activity.")] = SessionOrder.created,
+) -> None:
     try:
-        sessions = tmux_api.list_sessions()
+        sessions = _sort_sessions(tmux_api.list_session_info(), by)
     except Exception as exc:
         _fail(str(exc))
-    typer.echo("SESSION")
-    for session in sessions:
-        typer.echo(session)
+    _print_recent_sessions(sessions, by)
+
+
+@app.command("l", hidden=True)
+def list_sessions_alias(
+    by: Annotated[SessionOrder, typer.Option("--by", help="Sort by session creation time or last activity.")] = SessionOrder.created,
+) -> None:
+    list_sessions(by=by)
 
 
 @app.command()
@@ -147,6 +224,14 @@ def recent(
     except Exception as exc:
         _fail(str(exc))
     _print_recent_sessions(sessions, by)
+
+
+@app.command("r", hidden=True)
+def recent_alias(
+    limit: Annotated[int, typer.Option("--limit", min=1, help="Number of sessions to show.")] = 10,
+    by: Annotated[SessionOrder, typer.Option("--by", help="Sort by session creation time or last activity.")] = SessionOrder.created,
+) -> None:
+    recent(limit=limit, by=by)
 
 
 @app.command()
@@ -229,6 +314,36 @@ def create_or_attach(
         _fail(str(exc))
 
 
+@app.command()
+def kill(
+    target: str,
+    by: Annotated[SessionOrder, typer.Option("--by", help="Interpret numeric IDs using session creation time or last activity.")] = SessionOrder.created,
+    yes: Annotated[bool, typer.Option("--yes", help="Skip the confirmation prompt.")] = False,
+) -> None:
+    session_name = _resolve_session_target(target, by)
+
+    if not yes:
+        confirmed = typer.confirm(f"Kill tmux session '{session_name}'?", default=False)
+        if not confirmed:
+            typer.echo("Aborted.")
+            raise typer.Exit(code=1)
+
+    try:
+        tmux_api.kill_session(session_name)
+    except Exception as exc:
+        _fail(str(exc))
+    typer.echo(f"Killed session {session_name}")
+
+
+@app.command("k", hidden=True)
+def kill_alias(
+    target: str,
+    by: Annotated[SessionOrder, typer.Option("--by", help="Interpret numeric IDs using session creation time or last activity.")] = SessionOrder.created,
+    yes: Annotated[bool, typer.Option("--yes", help="Skip the confirmation prompt.")] = False,
+) -> None:
+    kill(target=target, by=by, yes=yes)
+
+
 @app.command("attach-last")
 def attach_last(
     by: Annotated[SessionOrder, typer.Option("--by", help="Pick the newest session by creation time or last activity.")] = SessionOrder.created,
@@ -264,21 +379,6 @@ def attach_recent(
         tmux_api.attach_session(sessions[index - 1].name)
     except Exception as exc:
         _fail(str(exc))
-
-
-@app.command("a1", hidden=True)
-def attach_recent_1() -> None:
-    attach_recent(1)
-
-
-@app.command("a2", hidden=True)
-def attach_recent_2() -> None:
-    attach_recent(2)
-
-
-@app.command("a3", hidden=True)
-def attach_recent_3() -> None:
-    attach_recent(3)
 
 
 @app.command()
@@ -437,6 +537,14 @@ def daemon(
 
 def main() -> None:
     argv = list(sys.argv[1:])
-    if argv and argv[0].startswith(":") and len(argv[0]) > 1:
-        argv = ["create-or-attach", argv[0][1:], *argv[1:]]
+    if not argv:
+        argv = ["--help"]
+    else:
+        first = argv[0]
+        if first.startswith(":") and len(first) > 1:
+            argv = ["create-or-attach", first[1:], *argv[1:]]
+        elif first.isdigit() and int(first) >= 1:
+            argv = ["attach-recent", first, *argv[1:]]
+        elif not first.startswith("-") and first not in ROOT_COMMAND_NAMES:
+            argv = ["attach", first, *argv[1:]]
     app(args=argv)
