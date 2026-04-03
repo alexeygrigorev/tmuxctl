@@ -100,6 +100,22 @@ def attach_session(session_name: str) -> None:
         raise TmuxCommandError(stderr or f"failed to attach to '{session_name}'")
 
 
+def create_or_attach_session(session_name: str) -> None:
+    if session_exists(session_name):
+        attach_session(session_name)
+        return
+
+    inside_tmux = bool(os.environ.get("TMUX"))
+    command = ["new-session", "-d", "-s", session_name] if inside_tmux else ["new-session", "-s", session_name]
+    result = _run_tmux(command, check=False)
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        raise TmuxCommandError(stderr or f"failed to create session '{session_name}'")
+
+    if inside_tmux:
+        attach_session(session_name)
+
+
 def send_keys(
     session_name: str,
     message: str,

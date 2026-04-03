@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from enum import Enum
 from pathlib import Path
 from typing import Annotated
@@ -25,6 +26,14 @@ def _conn() -> object:
 def _fail(message: str, *, code: int = 1) -> None:
     typer.echo(f"Error: {message}", err=True)
     raise typer.Exit(code=code)
+
+
+def _complete_session_names(incomplete: str) -> list[str]:
+    try:
+        sessions = tmux_api.list_sessions()
+    except Exception:
+        return []
+    return [session for session in sessions if session.startswith(incomplete)]
 
 
 def _resolve_message(
@@ -142,7 +151,7 @@ def recent(
 
 @app.command()
 def send(
-    session_name: str,
+    session_name: Annotated[str, typer.Argument(autocompletion=_complete_session_names)],
     message: Annotated[str | None, typer.Option("--message", help="Message text to send.")] = None,
     message_file: Annotated[Path | None, typer.Option("--message-file", help="Read message text from a file.")] = None,
     no_enter: Annotated[bool, typer.Option("--no-enter", help="Do not press Enter after sending.")] = False,
@@ -201,9 +210,21 @@ def send(
 
 
 @app.command()
-def attach(session_name: str) -> None:
+def attach(
+    session_name: Annotated[str, typer.Argument(autocompletion=_complete_session_names)],
+) -> None:
     try:
         tmux_api.attach_session(session_name)
+    except Exception as exc:
+        _fail(str(exc))
+
+
+@app.command("create-or-attach")
+def create_or_attach(
+    session_name: Annotated[str, typer.Argument(autocompletion=_complete_session_names)],
+) -> None:
+    try:
+        tmux_api.create_or_attach_session(session_name)
     except Exception as exc:
         _fail(str(exc))
 
@@ -262,7 +283,7 @@ def attach_recent_3() -> None:
 
 @app.command()
 def add(
-    session_name: str,
+    session_name: Annotated[str, typer.Argument(autocompletion=_complete_session_names)],
     every: Annotated[str, typer.Option("--every", help="Recurring interval like 15m or 2h.")],
     message: Annotated[str | None, typer.Option("--message", help="Message text to send.")] = None,
     message_file: Annotated[Path | None, typer.Option("--message-file", help="Read message text from a file.")] = None,
@@ -415,4 +436,7 @@ def daemon(
 
 
 def main() -> None:
-    app()
+    argv = list(sys.argv[1:])
+    if argv and argv[0].startswith(":") and len(argv[0]) > 1:
+        argv = ["create-or-attach", argv[0][1:], *argv[1:]]
+    app(args=argv)

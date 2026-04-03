@@ -8,6 +8,8 @@ from tmuxctl import storage, tmux_api
 from tmuxctl.models import Job
 from tmuxctl.utils import to_timestamp, utcnow
 
+MAX_CONSECUTIVE_FAILURES = 3
+
 
 def _resolve_job_message(job: Job) -> str:
     if not job.message_file_path:
@@ -45,6 +47,12 @@ def run_job(conn, job: Job) -> tuple[bool, str | None]:
         status=status,
         error_text=error_text,
     )
+
+    recent_failures = storage.count_recent_consecutive_failures(conn, job.id)
+    if recent_failures >= MAX_CONSECUTIVE_FAILURES:
+        storage.delete_job(conn, job.id)
+        return False, error_text
+
     storage.update_job(
         conn,
         job.id,

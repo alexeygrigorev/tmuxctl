@@ -13,6 +13,20 @@ Small tmux session controller with recurring sends.
 
 ## Install
 
+Install from PyPI with `uv`:
+
+```bash
+uv tool install tmuxctl
+tmuxctl --help
+```
+
+Or with `pip`:
+
+```bash
+pip install tmuxctl
+tmuxctl --help
+```
+
 Install from GitHub with `uv`:
 
 ```bash
@@ -38,7 +52,7 @@ uv tool install -e . --force
 For development, tests, and builds:
 
 ```bash
-uv sync --group dev
+uv sync --dev
 uv run pytest
 uv build
 ```
@@ -57,11 +71,15 @@ Attach to a session directly or jump to the newest one:
 
 ```bash
 tmuxctl attach codex
+tmuxctl create-or-attach codex
+tmuxctl :codex
 tmuxctl attach-last
 tmuxctl attach-last --by activity
 tmuxctl attach-recent 2
 tmuxctl attach-recent 3 --by activity
 ```
+
+`tmuxctl :codex` is shorthand for `tmuxctl create-or-attach codex`.
 
 There are also short hidden aliases for the most recent sessions:
 
@@ -124,6 +142,12 @@ tmuxctl edit 2 --message "check status and continue"
 tmuxctl edit 3 --message-file prompts/rk-codex-progress.txt
 ```
 
+Remove a job:
+
+```bash
+tmuxctl remove 3
+```
+
 List jobs and logs:
 
 ```bash
@@ -134,6 +158,8 @@ tmuxctl logs --limit 20
 `tmuxctl jobs` shows whether a job uses inline text or a linked file prompt.
 
 Logs include the target session, whether the send was manual or scheduled, whether Return was sent, the Enter delay used, and any recorded error text.
+
+If a scheduled job fails 3 runs in a row, `tmuxctl daemon` removes it automatically.
 
 Run the scheduler:
 
@@ -177,3 +203,21 @@ If you want jobs to keep running after logout or reboot, use an external process
 - `cron @reboot` as a fallback
 
 Even in those setups, cron or systemd only starts `tmuxctl daemon`. The recurring schedule itself still lives in the `tmuxctl` database.
+
+## Bash Completion
+
+`tmuxctl` includes shell completion through Typer.
+
+Install completion for your current Bash setup:
+
+```bash
+tmuxctl --install-completion
+```
+
+Preview or manually wire the Bash completion script:
+
+```bash
+tmuxctl --show-completion bash
+```
+
+Session-taking commands also complete existing tmux session names in Bash.

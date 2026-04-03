@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from typer.testing import CliRunner
 
+from tmuxctl import cli
 from tmuxctl.cli import app
 from tmuxctl.models import Job
 
@@ -135,3 +137,23 @@ def test_jobs_shows_inline_and_file_sources(monkeypatch) -> None:
     assert "file" in result.output
     assert "short inline prompt" in result.output
     assert "prompts/rk-codex-progress.txt" in result.output
+
+
+def test_complete_session_names_filters_matches(monkeypatch) -> None:
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.list_sessions", lambda: ["rk-codex", "rk-worker", "other"])
+
+    assert cli._complete_session_names("rk-") == ["rk-codex", "rk-worker"]
+
+
+def test_main_rewrites_colon_shortcut(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_app(*, args):
+        captured["args"] = args
+
+    monkeypatch.setattr(cli, "app", fake_app)
+    monkeypatch.setattr(sys, "argv", ["tmuxctl", ":rk-codex"])
+
+    cli.main()
+
+    assert captured["args"] == ["create-or-attach", "rk-codex"]

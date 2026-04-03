@@ -301,6 +301,25 @@ def list_logs(conn: sqlite3.Connection, limit: int = 20) -> list[LogEntry]:
     return [_log_from_row(row) for row in rows]
 
 
+def count_recent_consecutive_failures(conn: sqlite3.Connection, job_id: int) -> int:
+    rows = conn.execute(
+        """
+        SELECT status
+        FROM logs
+        WHERE job_id = ?
+        ORDER BY created_at DESC, id DESC
+        """,
+        (job_id,),
+    ).fetchall()
+
+    failures = 0
+    for row in rows:
+        if row["status"] != "failed":
+            break
+        failures += 1
+    return failures
+
+
 def compute_next_run(interval_seconds: int) -> str:
     return to_timestamp(utcnow() + timedelta(seconds=interval_seconds))
 
