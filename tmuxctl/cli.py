@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -26,6 +27,37 @@ def _fail(message: str, *, code: int = 1) -> None:
     raise typer.Exit(code=code)
 
 
+def _resolve_message(
+    *,
+    message: str | None,
+    message_file: Path | None,
+) -> str:
+    if message is not None and message_file is not None:
+        _fail("choose either --message or --message-file, not both")
+    if message is None and message_file is None:
+        _fail("one of --message or --message-file is required")
+    if message_file is None:
+        return message or ""
+
+    try:
+        file_message = message_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        _fail(f"unable to read message file '{message_file}': {exc}")
+
+    return file_message.rstrip("\r\n")
+
+
+def _resolve_job_message_source(
+    *,
+    message: str | None,
+    message_file: Path | None,
+) -> tuple[str, str | None]:
+    resolved_message = _resolve_message(message=message, message_file=message_file)
+    if message_file is None:
+        return resolved_message, None
+    return resolved_message, str(message_file)
+
+
 def _require_job(conn, job_id: int) -> Job:
     job = storage.get_job(conn, job_id)
     if job is None:
@@ -34,14 +66,17 @@ def _require_job(conn, job_id: int) -> Job:
 
 
 def _print_jobs(jobs: list[Job]) -> None:
-    typer.echo("ID  ENABLED  SESSION  EVERY  DELAY  NEXT RUN             MESSAGE")
+    typer.echo("ID  ENABLED  SESSION  EVERY  DELAY  SOURCE  NEXT RUN             DETAIL")
     for job in jobs:
         enabled = "yes" if job.enabled else "no"
         next_run = display_timestamp(job.next_run_at)
-        message = job.message if len(job.message) <= 40 else f"{job.message[:37]}..."
+        source = "file" if job.message_file_path else "inline"
+        detail_value = job.message_file_path or job.message
+        detail = detail_value if len(detail_value) <= 40 else f"{detail_value[:37]}..."
         typer.echo(
             f"{job.id:<3} {enabled:<8} {job.session_name:<8} "
-            f"{format_interval(job.interval_seconds):<6} {job.enter_delay_ms:<6} {next_run:<20} {message}"
+            f"{format_interval(job.interval_seconds):<6} {job.enter_delay_ms:<6} "
+            f"{source:<7} {next_run:<20} {detail}"
         )
 
 
@@ -108,17 +143,19 @@ def recent(
 @app.command()
 def send(
     session_name: str,
-    message: str,
+    message: Annotated[str | None, typer.Option("--message", help="Message text to send.")] = None,
+    message_file: Annotated[Path | None, typer.Option("--message-file", help="Read message text from a file.")] = None,
     no_enter: Annotated[bool, typer.Option("--no-enter", help="Do not press Enter after sending.")] = False,
     enter_delay_ms: Annotated[int, typer.Option("--enter-delay-ms", min=0, help="Wait this many milliseconds before pressing Enter.")] = 200,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Validate the target but do not send anything.")] = False,
 ) -> None:
     conn = _conn()
+    resolved_message = _resolve_message(message=message, message_file=message_file)
     if not tmux_api.session_exists(session_name):
         storage.insert_log(
             conn,
             session_name=session_name,
-            message=message,
+            message=resolved_message,
             trigger_type="manual",
             send_enter=not no_enter,
             enter_delay_ms=enter_delay_ms,
@@ -128,13 +165,13 @@ def send(
         _fail(f"tmux session '{session_name}' was not found")
 
     if dry_run:
-        typer.echo(f"Would send to {session_name}: {message}")
+        typer.echo(f"Would send to {session_name}: {resolved_message}")
         return
 
     try:
         tmux_api.send_keys(
             session_name,
-            message,
+            resolved_message,
             press_enter=not no_enter,
             enter_delay_ms=enter_delay_ms,
         )
@@ -142,7 +179,7 @@ def send(
         storage.insert_log(
             conn,
             session_name=session_name,
-            message=message,
+            message=resolved_message,
             trigger_type="manual",
             send_enter=not no_enter,
             enter_delay_ms=enter_delay_ms,
@@ -154,7 +191,7 @@ def send(
     storage.insert_log(
         conn,
         session_name=session_name,
-        message=message,
+        message=resolved_message,
         trigger_type="manual",
         send_enter=not no_enter,
         enter_delay_ms=enter_delay_ms,
@@ -227,11 +264,16 @@ def attach_recent_3() -> None:
 def add(
     session_name: str,
     every: Annotated[str, typer.Option("--every", help="Recurring interval like 15m or 2h.")],
-    message: Annotated[str, typer.Option("--message", help="Message text to send.")],
+    message: Annotated[str | None, typer.Option("--message", help="Message text to send.")] = None,
+    message_file: Annotated[Path | None, typer.Option("--message-file", help="Read message text from a file.")] = None,
     no_enter: Annotated[bool, typer.Option("--no-enter", help="Do not press Enter after sending.")] = False,
     enter_delay_ms: Annotated[int, typer.Option("--enter-delay-ms", min=0, help="Wait this many milliseconds before pressing Enter.")] = 200,
     start_now: Annotated[bool, typer.Option("--start-now", help="Run the job on the next daemon poll.")] = False,
 ) -> None:
+    resolved_message, message_file_path = _resolve_job_message_source(
+        message=message,
+        message_file=message_file,
+    )
     if not tmux_api.session_exists(session_name):
         _fail(f"tmux session '{session_name}' was not found")
     try:
@@ -243,7 +285,8 @@ def add(
     job = storage.create_job(
         conn,
         session_name=session_name,
-        message=message,
+        message=resolved_message,
+        message_file_path=message_file_path,
         interval_seconds=interval_seconds,
         send_enter=not no_enter,
         enter_delay_ms=enter_delay_ms,
@@ -292,6 +335,7 @@ def remove(
 def edit(
     job_id: int,
     message: Annotated[str | None, typer.Option("--message", help="Replace the stored message text.")] = None,
+    message_file: Annotated[Path | None, typer.Option("--message-file", help="Replace the stored message text from a file.")] = None,
     every: Annotated[str | None, typer.Option("--every", help="Replace the recurring interval.")] = None,
     session: Annotated[str | None, typer.Option("--session", help="Replace the tmux session name.")] = None,
     enter_delay_ms: Annotated[int | None, typer.Option("--enter-delay-ms", min=0, help="Replace the Enter delay in milliseconds.")] = None,
@@ -326,11 +370,20 @@ def edit(
         base_interval = interval_seconds if interval_seconds is not None else job.interval_seconds
         next_run_at = storage.compute_next_run(base_interval)
 
+    resolved_message = None
+    message_file_path = None
+    if message is not None or message_file is not None:
+        resolved_message, message_file_path = _resolve_job_message_source(
+            message=message,
+            message_file=message_file,
+        )
+
     updated = storage.update_job(
         conn,
         job_id,
         session_name=session,
-        message=message,
+        message=resolved_message,
+        message_file_path=message_file_path,
         interval_seconds=interval_seconds,
         enter_delay_ms=enter_delay_ms,
         enabled=enabled,

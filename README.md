@@ -77,6 +77,12 @@ Send one message now:
 tmuxctl send codex "check status and fix if something is broken or stuck"
 ```
 
+Send one message from a file:
+
+```bash
+tmuxctl send rk-codex --message-file prompts/rk-codex-progress.txt
+```
+
 By default, `tmuxctl send` waits `200ms` before pressing Return. Override that with `--enter-delay-ms` or disable Return with `--no-enter`.
 
 Create a recurring job:
@@ -90,7 +96,18 @@ Recurring jobs also store an Enter delay. By default that is `200ms`, and you ca
 Example: send an automated follow-up to `rk-codex` every 30 minutes:
 
 ```bash
-tmuxctl add rk-codex --every 30m --message "If not active, pick 2 next tasks. This is an automated message."
+tmuxctl add rk-codex --every 30m --message-file prompts/rk-codex-progress.txt
+```
+
+You can load message text from a file with `--message-file` for `tmuxctl send`, `tmuxctl add`, and `tmuxctl edit`.
+
+For `tmuxctl add` and `tmuxctl edit`, the file path is stored with the job. Scheduled runs read the file at send time, so updating the prompt file changes future runs without recreating the job.
+
+To switch an existing job to the shared prompt file:
+
+```bash
+tmuxctl jobs
+tmuxctl edit <job_id> --message-file prompts/rk-codex-progress.txt
 ```
 
 Example: check a worker session every 30 minutes and unblock stalled progress:
@@ -99,12 +116,22 @@ Example: check a worker session every 30 minutes and unblock stalled progress:
 tmuxctl add lnewly-57 --every 30m --message "Status check for litehive: report current progress, current task, and the last meaningful change. Check whether progress is stalled, not whether you personally feel stuck. Identify blockers, lack of movement, repeated retries, failing commands, broken states, or missing dependencies. If progress is stalled, choose the best next concrete action to unblock litehive and execute it. Fix any problems you can fix now, then continue the work and summarize what changed."
 ```
 
+Edit an existing job:
+
+```bash
+tmuxctl edit 2 --every 45m
+tmuxctl edit 2 --message "check status and continue"
+tmuxctl edit 3 --message-file prompts/rk-codex-progress.txt
+```
+
 List jobs and logs:
 
 ```bash
 tmuxctl jobs
 tmuxctl logs --limit 20
 ```
+
+`tmuxctl jobs` shows whether a job uses inline text or a linked file prompt.
 
 Logs include the target session, whether the send was manual or scheduled, whether Return was sent, the Enter delay used, and any recorded error text.
 

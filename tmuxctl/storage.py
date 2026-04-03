@@ -9,6 +9,7 @@ from tmuxctl.utils import parse_timestamp, to_timestamp, utcnow
 
 
 DEFAULT_DB_PATH = Path.home() / ".config" / "tmuxctl" / "tmuxctl.db"
+_UNSET = object()
 
 
 def get_default_db_path() -> Path:
@@ -33,6 +34,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY,
             session_name TEXT NOT NULL,
             message TEXT NOT NULL,
+            message_file_path TEXT NULL,
             interval_seconds INTEGER NOT NULL,
             enabled INTEGER NOT NULL DEFAULT 1,
             send_enter INTEGER NOT NULL DEFAULT 1,
@@ -65,6 +67,10 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE jobs ADD COLUMN enter_delay_ms INTEGER NOT NULL DEFAULT 200"
         )
+    if "message_file_path" not in columns:
+        conn.execute(
+            "ALTER TABLE jobs ADD COLUMN message_file_path TEXT NULL"
+        )
     log_columns = {
         row["name"]
         for row in conn.execute("PRAGMA table_info(logs)").fetchall()
@@ -89,6 +95,7 @@ def _job_from_row(row: sqlite3.Row) -> Job:
         id=row["id"],
         session_name=row["session_name"],
         message=row["message"],
+        message_file_path=row["message_file_path"],
         interval_seconds=row["interval_seconds"],
         enabled=bool(row["enabled"]),
         send_enter=bool(row["send_enter"]),
@@ -120,6 +127,7 @@ def create_job(
     *,
     session_name: str,
     message: str,
+    message_file_path: str | None = None,
     interval_seconds: int,
     send_enter: bool = True,
     enter_delay_ms: int = 200,
@@ -131,13 +139,14 @@ def create_job(
     cursor = conn.execute(
         """
         INSERT INTO jobs (
-            session_name, message, interval_seconds, enabled, send_enter, enter_delay_ms,
-            created_at, updated_at, last_run_at, next_run_at
-        ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, NULL, ?)
+            session_name, message, message_file_path, interval_seconds, enabled,
+            send_enter, enter_delay_ms, created_at, updated_at, last_run_at, next_run_at
+        ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, NULL, ?)
         """,
         (
             session_name,
             message,
+            message_file_path,
             interval_seconds,
             int(send_enter),
             enter_delay_ms,
@@ -169,6 +178,7 @@ def update_job(
     *,
     session_name: str | None = None,
     message: str | None = None,
+    message_file_path: str | None | object = _UNSET,
     interval_seconds: int | None = None,
     enabled: bool | None = None,
     send_enter: bool | None = None,
@@ -183,6 +193,7 @@ def update_job(
     values = {
         "session_name": current.session_name if session_name is None else session_name,
         "message": current.message if message is None else message,
+        "message_file_path": current.message_file_path if message_file_path is _UNSET else message_file_path,
         "interval_seconds": current.interval_seconds if interval_seconds is None else interval_seconds,
         "enabled": int(current.enabled if enabled is None else enabled),
         "send_enter": int(current.send_enter if send_enter is None else send_enter),
@@ -197,6 +208,7 @@ def update_job(
         UPDATE jobs
         SET session_name = :session_name,
             message = :message,
+            message_file_path = :message_file_path,
             interval_seconds = :interval_seconds,
             enabled = :enabled,
             send_enter = :send_enter,

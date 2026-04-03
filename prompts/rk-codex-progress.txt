@@ -1,0 +1,20 @@
+If a task is active, continue it until one of these happens:
+1. you complete a bounded piece of work and commit it
+2. verification fails and you need to report the failure
+3. you hit a concrete blocker
+4. you need a human decision
+
+Only send an update when status changes:
+- started
+- verification failed
+- blocked
+- committed
+- switched tasks
+
+If no task is active:
+1. resume the highest-priority in-progress issue
+2. if none is in progress, pick the next unblocked task and start it
+3. mention the next 2 queued tasks once, only when you start or switch tasks
+
+Do not restate the queue if nothing changed.
+Do not send routine check-in text.

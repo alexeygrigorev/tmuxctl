@@ -8,6 +8,7 @@ class Job:
     id: int
     session_name: str
     message: str
+    message_file_path: str | None
     interval_seconds: int
     enabled: bool
     send_enter: bool

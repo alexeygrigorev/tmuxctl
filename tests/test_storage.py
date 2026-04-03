@@ -51,3 +51,33 @@ def test_create_job_persists_enter_delay() -> None:
     stored = storage.get_job(conn, job.id)
     assert stored is not None
     assert stored.enter_delay_ms == 350
+
+
+def test_init_db_adds_message_file_path_column() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE jobs (
+            id INTEGER PRIMARY KEY,
+            session_name TEXT NOT NULL,
+            message TEXT NOT NULL,
+            interval_seconds INTEGER NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            send_enter INTEGER NOT NULL DEFAULT 1,
+            enter_delay_ms INTEGER NOT NULL DEFAULT 200,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_run_at TEXT NULL,
+            next_run_at TEXT NOT NULL
+        );
+        """
+    )
+
+    storage.init_db(conn)
+
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(jobs)").fetchall()
+    }
+    assert "message_file_path" in columns
