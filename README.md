@@ -1,37 +1,265 @@
 # tmuxctl
 
-Small tmux session controller with recurring sends.
+`tmuxctl` is a small tmux workflow helper for three things:
 
-`tmuxctl` lets you:
+- finding the session you want
+- jumping to it quickly
+- sending recurring follow-ups to long-running agent or worker sessions
 
-- list tmux sessions by name
-- show the most recent sessions by creation time or activity
-- attach to a named session or jump to the most recent ones quickly
-- send a message to a session's active pane
-- store recurring jobs in SQLite
-- run a lightweight daemon loop that executes due jobs
+It installs two executables:
+
+- `tmuxctl`
+- `t`
+
+`t` is just the shorter alias for the same CLI.
 
 ## Install
 
-Install from PyPI with `uv`:
+Primary install:
 
 ```bash
 uv tool install tmuxctl
-tmuxctl --help
 ```
 
-Or with `pip`:
+Then use either:
+
+```bash
+tmuxctl --help
+t --help
+```
+
+## Core Workflow
+
+### 1. Find the session you want
+
+Show all sessions, sorted by recency, with numeric IDs:
+
+```bash
+t list
+```
+
+Short form:
+
+```bash
+t l
+```
+
+Typical output:
+
+```text
+IDX  SESSION               CREATED
+1    codex                 2026-04-03 15:56:59
+2    backend-worker        2026-04-03 15:22:10
+3    docs                  2026-04-03 14:10:31
+```
+
+If you just want the recent view:
+
+```bash
+t r
+t recent --limit 10
+```
+
+### 2. Jump into a session
+
+Attach by name:
+
+```bash
+t codex
+```
+
+That is equivalent to:
+
+```bash
+t attach codex
+```
+
+Attach by recency index:
+
+```bash
+t 1
+t 2
+t 10
+```
+
+Those resolve to `attach-recent N`.
+
+Attach to the newest session directly:
+
+```bash
+t attach-last
+```
+
+### 3. Create a session if it does not exist
+
+Use a leading colon when you want create-or-attach behavior:
+
+```bash
+t :codex
+```
+
+That resolves to:
+
+```bash
+t create-or-attach codex
+```
+
+Rule of thumb:
+
+- `t codex` means attach only
+- `t :codex` means create or attach
+
+### 4. Send a one-off message
+
+Send text directly:
+
+```bash
+t send codex --message "check status and continue"
+```
+
+Or send from a file:
+
+```bash
+t send rk-codex --message-file prompts/rk-codex-progress.txt
+```
+
+By default, `send` waits `200ms` before pressing Enter. You can change that:
+
+```bash
+t send codex --message "status?" --enter-delay-ms 500
+t send codex --message "status?" --no-enter
+```
+
+## Automation Workflow
+
+### 1. Add a recurring job
+
+Inline message:
+
+```bash
+t add codex --every 15m --message "check status and continue"
+```
+
+Shared prompt file:
+
+```bash
+t add rk-codex --every 30m --message-file prompts/rk-codex-progress.txt
+```
+
+When a job uses `--message-file`, `tmuxctl` stores the file path and reads the file at send time. Updating the file updates future scheduled runs.
+
+### 2. Run the scheduler
+
+```bash
+t daemon
+```
+
+Recurring jobs only run while the daemon is running.
+
+### 3. Inspect and edit jobs
+
+```bash
+t jobs
+t logs --limit 20
+t edit 2 --every 45m
+t edit 2 --message "check status and continue"
+t edit 3 --message-file prompts/rk-codex-progress.txt
+```
+
+Useful job controls:
+
+```bash
+t pause 3
+t resume 3
+t remove 3
+```
+
+If a scheduled job fails 3 runs in a row, `tmuxctl daemon` removes it automatically.
+
+## Session Cleanup
+
+Kill a session by name:
+
+```bash
+t kill codex
+```
+
+Kill a session by the numeric ID shown in `t list`:
+
+```bash
+t kill 2
+```
+
+Skip confirmation:
+
+```bash
+t k 2 --yes
+```
+
+## Shell Setup
+
+### Bash completion
+
+Install completion:
+
+```bash
+t --install-completion
+```
+
+Preview the script:
+
+```bash
+t --show-completion bash
+```
+
+Completion works for:
+
+- commands
+- plain session names
+- `:session` shortcuts
+
+### Local checkout helper
+
+If you are working from this repository and want its virtualenv binaries on your `PATH`, run:
+
+```bash
+./install.sh
+```
+
+That appends this repo's `.venv/bin` to `~/.bashrc` and does nothing if the line is already present.
+
+## How Scheduling Works
+
+Recurring jobs are stored in:
+
+```text
+~/.config/tmuxctl/tmuxctl.db
+```
+
+The scheduler is database-driven:
+
+- `add` creates jobs
+- `edit`, `pause`, `resume`, and `remove` modify jobs
+- `daemon` polls for due jobs and runs them
+
+If you want recurring jobs to survive logout or reboot, keep `t daemon` running with something like:
+
+- `systemd --user`
+- `launchd`
+- `cron @reboot`
+
+## Alternatives
+
+Install with `pip`:
 
 ```bash
 pip install tmuxctl
-tmuxctl --help
 ```
 
-Install from GitHub with `uv`:
+Install directly from GitHub:
 
 ```bash
 uv tool install git+https://github.com/alexeygrigorev/tmuxctl.git
-tmuxctl --help
 ```
 
 Install from a local checkout in editable mode:
@@ -40,210 +268,24 @@ Install from a local checkout in editable mode:
 git clone https://github.com/alexeygrigorev/tmuxctl.git
 cd tmuxctl
 uv tool install -e .
-tmuxctl --help
 ```
 
-If you update the local checkout later, reinstall with:
+If you use the local checkout install, also run:
+
+```bash
+./install.sh
+```
+
+Reinstall the local checkout after updates:
 
 ```bash
 uv tool install -e . --force
 ```
 
-For development, tests, and builds:
+For development:
 
 ```bash
 uv sync --dev
 uv run pytest
 uv build
 ```
-
-If you want this checkout's virtualenv binaries on your shell `PATH`, run:
-
-```bash
-./install.sh
-```
-
-That appends this repo's `.venv/bin` to `~/.bashrc` and does nothing if the line is already present.
-
-## Usage
-
-List sessions:
-
-```bash
-tmuxctl list
-tmuxctl l
-tmuxctl r
-tmuxctl recent --limit 10
-```
-
-Attach to a session directly or jump to the newest one:
-
-```bash
-tmuxctl codex
-tmuxctl attach codex
-tmuxctl create-or-attach codex
-tmuxctl :codex
-tmuxctl kill codex
-tmuxctl kill 2
-tmuxctl k 2 --yes
-tmuxctl attach-last
-tmuxctl attach-recent 2
-tmuxctl attach-recent 3
-```
-
-`tmuxctl codex` resolves to `tmuxctl attach codex`.
-`tmuxctl :codex` resolves to `tmuxctl create-or-attach codex`.
-`tmuxctl kill NAME_OR_ID` kills a session by name or by the numeric ID shown in `tmuxctl list`.
-
-There are also short hidden aliases for the most recent sessions:
-
-```bash
-tmuxctl 1
-tmuxctl 2
-tmuxctl 3
-tmuxctl 10
-```
-
-Send one message now:
-
-```bash
-tmuxctl send codex "check status and fix if something is broken or stuck"
-```
-
-Send one message from a file:
-
-```bash
-tmuxctl send rk-codex --message-file prompts/rk-codex-progress.txt
-```
-
-By default, `tmuxctl send` waits `200ms` before pressing Return. Override that with `--enter-delay-ms` or disable Return with `--no-enter`.
-
-Create a recurring job:
-
-```bash
-tmuxctl add codex --every 15m --message "check status and fix if something is broken or stuck"
-```
-
-Recurring jobs also store an Enter delay. By default that is `200ms`, and you can override it with `--enter-delay-ms`.
-
-Example: send an automated follow-up to `rk-codex` every 30 minutes:
-
-```bash
-tmuxctl add rk-codex --every 30m --message-file prompts/rk-codex-progress.txt
-```
-
-You can load message text from a file with `--message-file` for `tmuxctl send`, `tmuxctl add`, and `tmuxctl edit`.
-
-For `tmuxctl add` and `tmuxctl edit`, the file path is stored with the job. Scheduled runs read the file at send time, so updating the prompt file changes future runs without recreating the job.
-
-To switch an existing job to the shared prompt file:
-
-```bash
-tmuxctl jobs
-tmuxctl edit <job_id> --message-file prompts/rk-codex-progress.txt
-```
-
-Example: check a worker session every 30 minutes and unblock stalled progress:
-
-```bash
-tmuxctl add lnewly-57 --every 30m --message "Status check for litehive: report current progress, current task, and the last meaningful change. Check whether progress is stalled, not whether you personally feel stuck. Identify blockers, lack of movement, repeated retries, failing commands, broken states, or missing dependencies. If progress is stalled, choose the best next concrete action to unblock litehive and execute it. Fix any problems you can fix now, then continue the work and summarize what changed."
-```
-
-Edit an existing job:
-
-```bash
-tmuxctl edit 2 --every 45m
-tmuxctl edit 2 --message "check status and continue"
-tmuxctl edit 3 --message-file prompts/rk-codex-progress.txt
-```
-
-Remove a job:
-
-```bash
-tmuxctl remove 3
-```
-
-List jobs and logs:
-
-```bash
-tmuxctl jobs
-tmuxctl logs --limit 20
-```
-
-`tmuxctl jobs` shows whether a job uses inline text or a linked file prompt.
-
-Logs include the target session, whether the send was manual or scheduled, whether Return was sent, the Enter delay used, and any recorded error text.
-
-If a scheduled job fails 3 runs in a row, `tmuxctl daemon` removes it automatically.
-
-Run the scheduler:
-
-```bash
-tmuxctl daemon
-```
-
-## Shortcuts
-
-Useful shortcuts for hopping between recent sessions:
-
-- `tmuxctl 1`
-- `tmuxctl 2`
-- `tmuxctl 3`
-- `tmuxctl 10`
-- `tmuxctl r`
-- `tmuxctl attach-last`
-- `tmuxctl attach-recent 2`
-- `tmuxctl attach-recent 3`
-
-## How Scheduling Works
-
-`tmuxctl` does not create cron entries and it does not require editing `crontab`.
-
-Recurring jobs are stored in SQLite at:
-
-```text
-~/.config/tmuxctl/tmuxctl.db
-```
-
-The commands work like this:
-
-- `tmuxctl add ...` inserts a recurring job into the database
-- `tmuxctl edit`, `pause`, `resume`, and `remove` update that stored job
-- `tmuxctl daemon` polls the database for due jobs and runs them
-
-That means recurring sends only happen while the daemon is running.
-
-If you want jobs to keep running after logout or reboot, use an external process manager to keep the daemon alive, for example:
-
-- `systemd --user` on Linux
-- `launchd` on macOS
-- `cron @reboot` as a fallback
-
-Even in those setups, cron or systemd only starts `tmuxctl daemon`. The recurring schedule itself still lives in the `tmuxctl` database.
-
-## Bash Completion
-
-`tmuxctl` includes shell completion through Typer.
-
-Install completion for your current Bash setup:
-
-```bash
-tmuxctl --install-completion
-```
-
-Preview or manually wire the Bash completion script:
-
-```bash
-tmuxctl --show-completion bash
-```
-
-Session-taking commands also complete existing tmux session names in Bash.
-At the top level, Bash completion also suggests plain session names and `:session` shortcuts.
-
-If you work from this checkout often and want its virtualenv binaries on your `PATH`, run:
-
-```bash
-./install.sh
-```
-
-That appends this repo's `.venv/bin` to `~/.bashrc` and leaves the file unchanged if the line is already present.
