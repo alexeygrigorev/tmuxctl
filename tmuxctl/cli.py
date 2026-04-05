@@ -417,9 +417,30 @@ def add(
 
 
 @app.command()
-def jobs() -> None:
+def jobs(
+    job_id: Annotated[int | None, typer.Argument(help="Show details for a specific job.")] = None,
+) -> None:
     conn = _conn()
-    _print_jobs(storage.list_jobs(conn))
+    if job_id is None:
+        _print_jobs(storage.list_jobs(conn))
+        return
+    job = storage.get_job(conn, job_id)
+    if job is None:
+        typer.echo(f"No job with id {job_id}")
+        raise typer.Exit(1)
+    source = "file" if job.message_file_path else "inline"
+    typer.echo(f"ID:       {job.id}")
+    typer.echo(f"Session:  {job.session_name}")
+    typer.echo(f"Enabled:  {'yes' if job.enabled else 'no'}")
+    typer.echo(f"Every:    {format_interval(job.interval_seconds)}")
+    typer.echo(f"Delay:    {job.enter_delay_ms}ms")
+    typer.echo(f"Source:   {source}")
+    if job.message_file_path:
+        typer.echo(f"File:     {job.message_file_path}")
+    typer.echo(f"Next run: {display_timestamp(job.next_run_at)}")
+    if job.last_run_at:
+        typer.echo(f"Last run: {display_timestamp(job.last_run_at)}")
+    typer.echo(f"Message:\n{job.message}")
 
 
 @app.command()
