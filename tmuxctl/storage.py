@@ -162,8 +162,14 @@ def create_job(
     return job
 
 
-def list_jobs(conn: sqlite3.Connection) -> list[Job]:
-    rows = conn.execute("SELECT * FROM jobs ORDER BY id ASC").fetchall()
+def list_jobs(conn: sqlite3.Connection, session_name: str | None = None) -> list[Job]:
+    if session_name is None:
+        rows = conn.execute("SELECT * FROM jobs ORDER BY id ASC").fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM jobs WHERE session_name = ? ORDER BY id ASC",
+            (session_name,),
+        ).fetchall()
     return [_job_from_row(row) for row in rows]
 
 

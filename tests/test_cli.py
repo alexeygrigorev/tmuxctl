@@ -97,7 +97,7 @@ def test_jobs_shows_inline_and_file_sources(monkeypatch) -> None:
     monkeypatch.setattr("tmuxctl.cli._conn", lambda: object())
     monkeypatch.setattr(
         "tmuxctl.cli.storage.list_jobs",
-        lambda conn: [
+        lambda conn, session_name=None: [
             Job(
                 id=1,
                 session_name="inline",

@@ -1,0 +1,13 @@
+Heartbeat — check on the v2 pipeline.
+
+Start with litehive status, then walk this checklist. One line per item unless something is wrong.
+
+1. Tasks progressing. Compare running/queued against the previous heartbeat. Check pipeline_transitions and pipeline_journal in .litehive/db.sqlite if the CLI is thin. A task stuck in one stage with no new turns is suspicious — investigate.
+2. Recovery agent handling issues. For any task that entered recovering, confirm it ran, what it decided (resume / advance / failed), and whether the origin stage resumed cleanly. Looping or stuck recovering is a bug — find the root cause.
+3. Merge conflicts handled. If a task hit a conflict at commit, confirm MergeAgent ran, the worktree ended clean, and it proceeded to after_commit. If not, find out why.
+4. Nothing stuck in failed. For each failed task, read failed_reason + failed_message and trace pipeline_transitions to the trigger.
+   - Small scoped fix: do it directly, commit, push.
+   - Cross-subsystem or design-touching: litehive task add with the bug description, reference the failing task id.
+5. Otherwise just monitor. If everything is healthy, say so in one line and move on.
+
+Housekeeping: if there's staged or unstaged work older than ~30 minutes that isn't actively evolving, commit and push.

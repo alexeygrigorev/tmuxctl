@@ -29,7 +29,9 @@ def _ensure_tmux() -> None:
         raise TmuxNotFoundError("tmux is not installed or not on PATH")
 
 
-def _run_tmux(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+def _run_tmux(
+    args: list[str], *, check: bool = True, timeout: int | None = None,
+) -> subprocess.CompletedProcess[str]:
     _ensure_tmux()
     try:
         result = subprocess.run(
@@ -37,7 +39,12 @@ def _run_tmux(args: list[str], *, check: bool = True) -> subprocess.CompletedPro
             capture_output=True,
             text=True,
             check=False,
+            timeout=timeout,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise TmuxCommandError(
+            f"tmux command timed out after {timeout}s: tmux {' '.join(args)}"
+        ) from exc
     except FileNotFoundError as exc:
         raise TmuxNotFoundError("tmux is not installed or not on PATH") from exc
 
@@ -135,7 +142,7 @@ def send_keys(
     if not session_exists(session_name):
         raise TmuxSessionNotFoundError(f"tmux session '{session_name}' was not found")
 
-    result = _run_tmux(["send-keys", "-t", session_name, message], check=False)
+    result = _run_tmux(["send-keys", "-t", session_name, message], check=False, timeout=30)
     if result.returncode != 0:
         stderr = (result.stderr or "").strip()
         raise TmuxCommandError(stderr or f"failed to send keys to '{session_name}'")
@@ -143,7 +150,7 @@ def send_keys(
     if press_enter:
         if enter_delay_ms > 0:
             time.sleep(enter_delay_ms / 1000)
-        result = _run_tmux(["send-keys", "-t", session_name, "Enter"], check=False)
+        result = _run_tmux(["send-keys", "-t", session_name, "Enter"], check=False, timeout=30)
         if result.returncode != 0:
             stderr = (result.stderr or "").strip()
             raise TmuxCommandError(stderr or f"failed to send Enter to '{session_name}'")

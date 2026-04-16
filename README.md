@@ -248,6 +248,41 @@ If you want recurring jobs to survive logout or reboot, keep `t daemon` running 
 - `launchd`
 - `cron @reboot`
 
+### Running as a systemd user service (Linux)
+
+Create `~/.config/systemd/user/tmuxctl.service`:
+
+```ini
+[Unit]
+Description=tmuxctl scheduler daemon
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/tmuxctl daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+Adjust `ExecStart` to wherever `tmuxctl` is installed (for a local editable checkout, point at `.venv/bin/tmuxctl`). Then enable and start it:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now tmuxctl.service
+systemctl --user status tmuxctl.service
+```
+
+To keep the daemon running after you log out, enable lingering for your user (needs sudo, one-time):
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
+Logs are available via `journalctl --user -u tmuxctl -f`.
+
 ## Alternatives
 
 Install with `pip`:

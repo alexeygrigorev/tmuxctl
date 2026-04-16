@@ -419,10 +419,14 @@ def add(
 @app.command()
 def jobs(
     job_id: Annotated[int | None, typer.Argument(help="Show details for a specific job.")] = None,
+    session: Annotated[
+        str | None,
+        typer.Option("--session", "-s", help="Only list jobs for the given tmux session."),
+    ] = None,
 ) -> None:
     conn = _conn()
     if job_id is None:
-        _print_jobs(storage.list_jobs(conn))
+        _print_jobs(storage.list_jobs(conn, session_name=session))
         return
     job = storage.get_job(conn, job_id)
     if job is None:
