@@ -28,6 +28,13 @@ tmuxctl --help
 t --help
 ```
 
+Run without arguments to see the 10 most recent sessions plus shortcut hints:
+
+```bash
+tmuxctl
+t
+```
+
 ## Core Workflow
 
 ### 1. Find the session you want
@@ -56,6 +63,7 @@ IDX  SESSION               CREATED
 If you just want the recent view:
 
 ```bash
+t
 t r
 t recent --limit 10
 ```

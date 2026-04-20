@@ -16,6 +16,7 @@ from tmuxctl.utils import display_timestamp, display_unix_timestamp, format_inte
 ROOT_COMMAND_NAMES = {
     "list",
     "l",
+    "ls",
     "recent",
     "r",
     "send",
@@ -35,6 +36,8 @@ ROOT_COMMAND_NAMES = {
     "daemon",
 }
 
+PROGRAM_NAME = "tmuxctl"
+
 
 class RootGroup(TyperGroup):
     def shell_complete(self, ctx, incomplete: str) -> list[CompletionItem]:
@@ -45,7 +48,7 @@ class RootGroup(TyperGroup):
 app = typer.Typer(
     cls=RootGroup,
     help="Control tmux sessions and recurring messages.",
-    no_args_is_help=True,
+    no_args_is_help=False,
 )
 
 
@@ -56,6 +59,15 @@ class SessionOrder(str, Enum):
 
 def _conn() -> object:
     return storage.get_connection()
+
+
+def _set_program_name(argv0: str) -> None:
+    global PROGRAM_NAME
+    PROGRAM_NAME = "t" if Path(argv0).name == "t" else "tmuxctl"
+
+
+def _program_name() -> str:
+    return PROGRAM_NAME
 
 
 def _fail(message: str, *, code: int = 1) -> None:
@@ -168,15 +180,27 @@ def _sort_sessions(sessions: list[SessionInfo], by: SessionOrder) -> list[Sessio
     return sorted(sessions, key=key, reverse=True)
 
 
-def _print_recent_sessions(sessions: list[SessionInfo], by: SessionOrder) -> None:
+def _load_sessions(*, by: SessionOrder, limit: int | None = None) -> list[SessionInfo]:
+    try:
+        sessions = _sort_sessions(tmux_api.list_session_info(), by)
+    except Exception as exc:
+        _fail(str(exc))
+    if limit is not None:
+        sessions = sessions[:limit]
+    return sessions
+
+
+def _print_recent_sessions(sessions: list[SessionInfo]) -> None:
     typer.echo("IDX  SESSION               CREATED")
     for index, session in enumerate(sessions, start=1):
         typer.echo(
             f"{index:<4} {session.name:<21} {display_unix_timestamp(session.created_at):<20}"
         )
-    if sessions:
-        typer.echo(f"\nNewest by {by.value}: tmuxctl attach-last --by {by.value}")
-        typer.echo(f"Nth recent: tmuxctl attach-recent <n> --by {by.value}")
+    program_name = _program_name()
+    typer.echo("")
+    typer.echo(f"Join a session: {program_name} <id> or {program_name} <session>")
+    typer.echo(f"Create a new one: {program_name} :<session>")
+    typer.echo(f"Help: {program_name} --help")
 
 
 def _resolve_session_target(target: str, by: SessionOrder) -> str:
@@ -196,19 +220,33 @@ def _resolve_session_target(target: str, by: SessionOrder) -> str:
     return target
 
 
+@app.callback(invoke_without_command=True)
+def root(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand is not None:
+        return
+    sessions = _load_sessions(by=SessionOrder.created, limit=10)
+    _print_recent_sessions(sessions)
+    raise typer.Exit()
+
+
 @app.command("list")
 def list_sessions(
     by: Annotated[SessionOrder, typer.Option("--by", help="Sort by session creation time or last activity.")] = SessionOrder.created,
 ) -> None:
-    try:
-        sessions = _sort_sessions(tmux_api.list_session_info(), by)
-    except Exception as exc:
-        _fail(str(exc))
-    _print_recent_sessions(sessions, by)
+    """List tmux sessions sorted by creation time or activity."""
+    sessions = _load_sessions(by=by)
+    _print_recent_sessions(sessions)
 
 
 @app.command("l", hidden=True)
 def list_sessions_alias(
+    by: Annotated[SessionOrder, typer.Option("--by", help="Sort by session creation time or last activity.")] = SessionOrder.created,
+) -> None:
+    list_sessions(by=by)
+
+
+@app.command("ls", hidden=True)
+def list_sessions_ls_alias(
     by: Annotated[SessionOrder, typer.Option("--by", help="Sort by session creation time or last activity.")] = SessionOrder.created,
 ) -> None:
     list_sessions(by=by)
@@ -219,11 +257,9 @@ def recent(
     limit: Annotated[int, typer.Option("--limit", min=1, help="Number of sessions to show.")] = 10,
     by: Annotated[SessionOrder, typer.Option("--by", help="Sort by session creation time or last activity.")] = SessionOrder.created,
 ) -> None:
-    try:
-        sessions = _sort_sessions(tmux_api.list_session_info(), by)[:limit]
-    except Exception as exc:
-        _fail(str(exc))
-    _print_recent_sessions(sessions, by)
+    """Show the most recent tmux sessions."""
+    sessions = _load_sessions(by=by, limit=limit)
+    _print_recent_sessions(sessions)
 
 
 @app.command("r", hidden=True)
@@ -243,6 +279,7 @@ def send(
     enter_delay_ms: Annotated[int, typer.Option("--enter-delay-ms", min=0, help="Wait this many milliseconds before pressing Enter.")] = 200,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Validate the target but do not send anything.")] = False,
 ) -> None:
+    """Send a message to a tmux session."""
     conn = _conn()
     resolved_message = _resolve_message(message=message, message_file=message_file)
     if not tmux_api.session_exists(session_name):
@@ -298,6 +335,7 @@ def send(
 def attach(
     session_name: Annotated[str, typer.Argument(autocompletion=_complete_session_names)],
 ) -> None:
+    """Attach to an existing tmux session."""
     try:
         tmux_api.attach_session(session_name)
     except Exception as exc:
@@ -308,6 +346,7 @@ def attach(
 def create_or_attach(
     session_name: Annotated[str, typer.Argument(autocompletion=_complete_session_names)],
 ) -> None:
+    """Create a tmux session if needed, then attach to it."""
     try:
         tmux_api.create_or_attach_session(session_name)
     except Exception as exc:
@@ -320,6 +359,7 @@ def kill(
     by: Annotated[SessionOrder, typer.Option("--by", help="Interpret numeric IDs using session creation time or last activity.")] = SessionOrder.created,
     yes: Annotated[bool, typer.Option("--yes", help="Skip the confirmation prompt.")] = False,
 ) -> None:
+    """Kill a tmux session by name or recent-session index."""
     session_name = _resolve_session_target(target, by)
 
     if not yes:
@@ -348,6 +388,7 @@ def kill_alias(
 def attach_last(
     by: Annotated[SessionOrder, typer.Option("--by", help="Pick the newest session by creation time or last activity.")] = SessionOrder.created,
 ) -> None:
+    """Attach to the newest tmux session."""
     try:
         sessions = _sort_sessions(tmux_api.list_session_info(), by)
     except Exception as exc:
@@ -365,6 +406,7 @@ def attach_recent(
     index: Annotated[int, typer.Argument(help="1-based index from the recent sessions list.")] = 1,
     by: Annotated[SessionOrder, typer.Option("--by", help="Pick sessions by creation time or last activity.")] = SessionOrder.created,
 ) -> None:
+    """Attach to a tmux session from the recent-session list."""
     if index < 1:
         _fail("index must be 1 or greater")
     try:
@@ -391,6 +433,7 @@ def add(
     enter_delay_ms: Annotated[int, typer.Option("--enter-delay-ms", min=0, help="Wait this many milliseconds before pressing Enter.")] = 200,
     start_now: Annotated[bool, typer.Option("--start-now", help="Run the job on the next daemon poll.")] = False,
 ) -> None:
+    """Create a recurring message job for a tmux session."""
     resolved_message, message_file_path = _resolve_job_message_source(
         message=message,
         message_file=message_file,
@@ -424,6 +467,7 @@ def jobs(
         typer.Option("--session", "-s", help="Only list jobs for the given tmux session."),
     ] = None,
 ) -> None:
+    """List scheduled jobs or show details for one job."""
     conn = _conn()
     if job_id is None:
         _print_jobs(storage.list_jobs(conn, session_name=session))
@@ -451,6 +495,7 @@ def jobs(
 def pause(
     job_id: int,
 ) -> None:
+    """Pause a scheduled job."""
     conn = _conn()
     _require_job(conn, job_id)
     storage.set_job_enabled(conn, job_id, False)
@@ -461,6 +506,7 @@ def pause(
 def resume(
     job_id: int,
 ) -> None:
+    """Resume a paused job."""
     conn = _conn()
     _require_job(conn, job_id)
     storage.set_job_enabled(conn, job_id, True)
@@ -471,6 +517,7 @@ def resume(
 def remove(
     job_id: int,
 ) -> None:
+    """Remove a scheduled job."""
     conn = _conn()
     if not storage.delete_job(conn, job_id):
         _fail(f"job {job_id} was not found")
@@ -488,6 +535,7 @@ def edit(
     enable: Annotated[bool, typer.Option("--enable", help="Enable the job.")] = False,
     disable: Annotated[bool, typer.Option("--disable", help="Disable the job.")] = False,
 ) -> None:
+    """Update an existing scheduled job."""
     conn = _conn()
     job = _require_job(conn, job_id)
 
@@ -544,6 +592,7 @@ def edit(
 def logs(
     limit: Annotated[int, typer.Option("--limit", min=1, help="Number of log rows to show.")] = 20,
 ) -> None:
+    """Show recent delivery logs."""
     conn = _conn()
     _print_logs(storage.list_logs(conn, limit=limit))
 
@@ -553,6 +602,7 @@ def daemon(
     poll_interval: Annotated[int, typer.Option("--poll-interval", min=1, help="Seconds between job polls.")] = 3,
     run_once: Annotated[bool, typer.Option("--run-once", help="Process due jobs once and exit.")] = False,
 ) -> None:
+    """Run the scheduler daemon or process due jobs once."""
     if run_once:
         count = scheduler.run_once()
         typer.echo(f"Processed {count} due job(s)")
@@ -561,10 +611,9 @@ def daemon(
 
 
 def main() -> None:
+    _set_program_name(sys.argv[0])
     argv = list(sys.argv[1:])
-    if not argv:
-        argv = ["--help"]
-    else:
+    if argv:
         first = argv[0]
         if first.startswith(":") and len(first) > 1:
             argv = ["create-or-attach", first[1:], *argv[1:]]

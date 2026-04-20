@@ -156,6 +156,22 @@ def test_list_shows_sorted_session_table(monkeypatch) -> None:
     assert "2    older" in result.output
 
 
+def test_ls_alias_shows_sorted_session_table(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tmuxctl.cli.tmux_api.list_session_info",
+        lambda: [
+            SessionInfo(name="older", created_at=100, activity_at=300),
+            SessionInfo(name="newer", created_at=200, activity_at=200),
+        ],
+    )
+
+    result = runner.invoke(app, ["ls"])
+
+    assert result.exit_code == 0
+    assert "1    newer" in result.output
+    assert "2    older" in result.output
+
+
 def test_kill_by_session_name(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
@@ -286,14 +302,50 @@ def test_main_rewrites_numeric_shortcut(monkeypatch) -> None:
 
 
 def test_app_shows_help_without_command() -> None:
-    result = runner.invoke(app, ["--help"])
+    result = runner.invoke(app, ["--help"], terminal_width=120)
 
     assert result.exit_code == 0
     assert "Usage: " in result.output
     assert "COMMAND [ARGS]..." in result.output
+    assert "List tmux sessions sorted by creation time or activity." in result.output
+    assert "Send a message to a tmux session." in result.output
+    assert "Run the scheduler daemon or process due jobs once." in result.output
 
 
-def test_main_shows_help_without_command(monkeypatch) -> None:
+def test_app_shows_recent_sessions_without_command(monkeypatch) -> None:
+    monkeypatch.setattr(cli, "PROGRAM_NAME", "tmuxctl")
+    monkeypatch.setattr(
+        "tmuxctl.cli.tmux_api.list_session_info",
+        lambda: [
+            SessionInfo(name="older", created_at=100, activity_at=300),
+            SessionInfo(name="newer", created_at=200, activity_at=200),
+        ],
+    )
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert "IDX  SESSION               CREATED" in result.output
+    assert "1    newer" in result.output
+    assert "2    older" in result.output
+    assert "Join a session: tmuxctl <id> or tmuxctl <session>" in result.output
+    assert "Create a new one: tmuxctl :<session>" in result.output
+    assert "Help: tmuxctl --help" in result.output
+
+
+def test_app_shows_t_hints_without_command(monkeypatch) -> None:
+    monkeypatch.setattr(cli, "PROGRAM_NAME", "t")
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.list_session_info", lambda: [])
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert "Join a session: t <id> or t <session>" in result.output
+    assert "Create a new one: t :<session>" in result.output
+    assert "Help: t --help" in result.output
+
+
+def test_main_runs_app_without_command(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     def fake_app(*, args):
@@ -304,4 +356,4 @@ def test_main_shows_help_without_command(monkeypatch) -> None:
 
     cli.main()
 
-    assert captured["args"] == ["--help"]
+    assert captured["args"] == []
