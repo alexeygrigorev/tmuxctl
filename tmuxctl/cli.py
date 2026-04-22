@@ -24,6 +24,7 @@ ROOT_COMMAND_NAMES = {
     "create-or-attach",
     "kill",
     "k",
+    "rename",
     "attach-last",
     "attach-recent",
     "add",
@@ -382,6 +383,32 @@ def kill_alias(
     yes: Annotated[bool, typer.Option("--yes", help="Skip the confirmation prompt.")] = False,
 ) -> None:
     kill(target=target, by=by, yes=yes)
+
+
+@app.command()
+def rename(
+    target: Annotated[str, typer.Argument(autocompletion=_complete_session_names)],
+    new_name: str,
+    by: Annotated[SessionOrder, typer.Option("--by", help="Interpret numeric IDs using session creation time or last activity.")] = SessionOrder.created,
+) -> None:
+    """Rename a tmux session and retarget its scheduled jobs."""
+    session_name = _resolve_session_target(target, by)
+    conn = _conn()
+
+    try:
+        tmux_api.rename_session(session_name, new_name)
+    except Exception as exc:
+        _fail(str(exc))
+
+    renamed_jobs = storage.rename_session_jobs(
+        conn,
+        session_name=session_name,
+        new_session_name=new_name,
+    )
+    typer.echo(
+        f"Renamed session {session_name} to {new_name}"
+        f" ({renamed_jobs} job(s) updated)"
+    )
 
 
 @app.command("attach-last")

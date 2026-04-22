@@ -133,6 +133,18 @@ def kill_session(session_name: str) -> None:
         raise TmuxCommandError(stderr or f"failed to kill '{session_name}'")
 
 
+def rename_session(session_name: str, new_name: str) -> None:
+    if not session_exists(session_name):
+        raise TmuxSessionNotFoundError(f"tmux session '{session_name}' was not found")
+    if session_exists(new_name):
+        raise TmuxCommandError(f"tmux session '{new_name}' already exists")
+
+    result = _run_tmux(["rename-session", "-t", session_name, new_name], check=False)
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        raise TmuxCommandError(stderr or f"failed to rename '{session_name}' to '{new_name}'")
+
+
 def send_keys(
     session_name: str,
     message: str,

@@ -237,6 +237,59 @@ def test_kill_aborts_without_confirmation(monkeypatch) -> None:
     assert "Aborted." in result.output
 
 
+def test_rename_by_session_name_updates_jobs(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr("tmuxctl.cli._conn", lambda: object())
+
+    def fake_rename_session(session_name: str, new_name: str) -> None:
+        captured["session_name"] = session_name
+        captured["new_name"] = new_name
+
+    def fake_rename_session_jobs(conn, *, session_name: str, new_session_name: str) -> int:
+        captured["job_session_name"] = session_name
+        captured["job_new_session_name"] = new_session_name
+        return 2
+
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.rename_session", fake_rename_session)
+    monkeypatch.setattr("tmuxctl.cli.storage.rename_session_jobs", fake_rename_session_jobs)
+
+    result = runner.invoke(app, ["rename", "rk-codex", "rk-main"])
+
+    assert result.exit_code == 0
+    assert captured["session_name"] == "rk-codex"
+    assert captured["new_name"] == "rk-main"
+    assert captured["job_session_name"] == "rk-codex"
+    assert captured["job_new_session_name"] == "rk-main"
+    assert "Renamed session rk-codex to rk-main (2 job(s) updated)" in result.output
+
+
+def test_rename_by_numeric_id(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr("tmuxctl.cli._conn", lambda: object())
+    monkeypatch.setattr(
+        "tmuxctl.cli.tmux_api.list_session_info",
+        lambda: [
+            SessionInfo(name="older", created_at=100, activity_at=300),
+            SessionInfo(name="newer", created_at=200, activity_at=200),
+        ],
+    )
+
+    def fake_rename_session(session_name: str, new_name: str) -> None:
+        captured["session_name"] = session_name
+        captured["new_name"] = new_name
+
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.rename_session", fake_rename_session)
+    monkeypatch.setattr("tmuxctl.cli.storage.rename_session_jobs", lambda *args, **kwargs: 0)
+
+    result = runner.invoke(app, ["rename", "2", "archived", "--by", "created"])
+
+    assert result.exit_code == 0
+    assert captured["session_name"] == "older"
+    assert captured["new_name"] == "archived"
+    assert "Renamed session older to archived (0 job(s) updated)" in result.output
+
+
 def test_complete_session_names_filters_matches(monkeypatch) -> None:
     monkeypatch.setattr("tmuxctl.cli.tmux_api.list_sessions", lambda: ["rk-codex", "rk-worker", "other"])
 
@@ -307,6 +360,7 @@ def test_app_shows_help_without_command() -> None:
     assert result.exit_code == 0
     assert "Usage: " in result.output
     assert "COMMAND [ARGS]..." in result.output
+    assert "Rename a tmux session and retarget its scheduled jobs." in result.output
     assert "List tmux sessions sorted by creation time or activity." in result.output
     assert "Send a message to a tmux session." in result.output
     assert "Run the scheduler daemon or process due jobs once." in result.output

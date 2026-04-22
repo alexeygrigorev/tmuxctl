@@ -246,6 +246,24 @@ def delete_job(conn: sqlite3.Connection, job_id: int) -> bool:
     return cursor.rowcount > 0
 
 
+def rename_session_jobs(
+    conn: sqlite3.Connection,
+    *,
+    session_name: str,
+    new_session_name: str,
+) -> int:
+    cursor = conn.execute(
+        """
+        UPDATE jobs
+        SET session_name = ?, updated_at = ?
+        WHERE session_name = ?
+        """,
+        (new_session_name, to_timestamp(utcnow()), session_name),
+    )
+    conn.commit()
+    return cursor.rowcount
+
+
 def get_due_jobs(conn: sqlite3.Connection, now: str | None = None) -> list[Job]:
     current = now or to_timestamp(utcnow())
     rows = conn.execute(

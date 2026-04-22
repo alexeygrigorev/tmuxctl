@@ -204,6 +204,13 @@ Skip confirmation:
 t k 2 --yes
 ```
 
+Rename a session and retarget any scheduled jobs bound to it:
+
+```bash
+t rename codex codex-main
+t rename 2 archived-worker
+```
+
 ## Shell Setup
 
 ### Bash completion
