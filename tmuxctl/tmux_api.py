@@ -95,6 +95,21 @@ def session_exists(name: str) -> bool:
     return result.returncode == 0
 
 
+def current_session_name() -> str:
+    if not os.environ.get("TMUX"):
+        raise TmuxCommandError("session alias ':current' requires running inside tmux")
+
+    result = _run_tmux(["display-message", "-p", "#S"], check=False)
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        raise TmuxCommandError(stderr or "unable to determine current tmux session")
+
+    session_name = result.stdout.strip()
+    if not session_name:
+        raise TmuxCommandError("unable to determine current tmux session")
+    return session_name
+
+
 def attach_session(session_name: str) -> None:
     if not session_exists(session_name):
         raise TmuxSessionNotFoundError(f"tmux session '{session_name}' was not found")

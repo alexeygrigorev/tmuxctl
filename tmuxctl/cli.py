@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sys
 from enum import Enum
 from pathlib import Path
@@ -69,6 +70,32 @@ def _set_program_name(argv0: str) -> None:
 
 def _program_name() -> str:
     return PROGRAM_NAME
+
+
+def _current_directory_session_name(
+    *,
+    cwd: Path | None = None,
+    home: Path | None = None,
+) -> str:
+    current = (cwd or Path.cwd()).resolve()
+    home_path = (home or Path.home()).resolve()
+
+    try:
+        relative = current.relative_to(home_path)
+        parts = relative.parts or (current.name,)
+    except ValueError:
+        parts = tuple(part for part in current.parts if part not in {current.anchor, ""})
+
+    normalized_parts = []
+    for part in parts:
+        normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", part).strip("-")
+        if normalized:
+            normalized_parts.append(normalized)
+
+    if not normalized_parts:
+        _fail("unable to derive session name from current directory")
+
+    return "-".join(normalized_parts)
 
 
 def _fail(message: str, *, code: int = 1) -> None:
@@ -143,6 +170,15 @@ def _require_job(conn, job_id: int) -> Job:
     return job
 
 
+def _resolve_session_name(name: str) -> str:
+    if name != ":current":
+        return name
+    try:
+        return tmux_api.current_session_name()
+    except Exception as exc:
+        _fail(str(exc))
+
+
 def _print_jobs(jobs: list[Job]) -> None:
     typer.echo("ID  ENABLED  SESSION  EVERY  DELAY  SOURCE  NEXT RUN             DETAIL")
     for job in jobs:
@@ -201,10 +237,13 @@ def _print_recent_sessions(sessions: list[SessionInfo]) -> None:
     typer.echo("")
     typer.echo(f"Join a session: {program_name} <id> or {program_name} <session>")
     typer.echo(f"Create a new one: {program_name} :<session>")
+    typer.echo(f"Use current folder: {program_name} -")
     typer.echo(f"Help: {program_name} --help")
 
 
 def _resolve_session_target(target: str, by: SessionOrder) -> str:
+    if target == ":current":
+        return _resolve_session_name(target)
     if target.isdigit():
         index = int(target)
         if index < 1:
@@ -282,6 +321,7 @@ def send(
 ) -> None:
     """Send a message to a tmux session."""
     conn = _conn()
+    session_name = _resolve_session_name(session_name)
     resolved_message = _resolve_message(message=message, message_file=message_file)
     if not tmux_api.session_exists(session_name):
         storage.insert_log(
@@ -337,6 +377,7 @@ def attach(
     session_name: Annotated[str, typer.Argument(autocompletion=_complete_session_names)],
 ) -> None:
     """Attach to an existing tmux session."""
+    session_name = _resolve_session_name(session_name)
     try:
         tmux_api.attach_session(session_name)
     except Exception as exc:
@@ -348,6 +389,7 @@ def create_or_attach(
     session_name: Annotated[str, typer.Argument(autocompletion=_complete_session_names)],
 ) -> None:
     """Create a tmux session if needed, then attach to it."""
+    session_name = _resolve_session_name(session_name)
     try:
         tmux_api.create_or_attach_session(session_name)
     except Exception as exc:
@@ -461,6 +503,7 @@ def add(
     start_now: Annotated[bool, typer.Option("--start-now", help="Run the job on the next daemon poll.")] = False,
 ) -> None:
     """Create a recurring message job for a tmux session."""
+    session_name = _resolve_session_name(session_name)
     resolved_message, message_file_path = _resolve_job_message_source(
         message=message,
         message_file=message_file,
@@ -566,6 +609,9 @@ def edit(
     conn = _conn()
     job = _require_job(conn, job_id)
 
+    if session is not None:
+        session = _resolve_session_name(session)
+
     if session is not None and not tmux_api.session_exists(session):
         _fail(f"tmux session '{session}' was not found")
 
@@ -642,7 +688,11 @@ def main() -> None:
     argv = list(sys.argv[1:])
     if argv:
         first = argv[0]
-        if first.startswith(":") and len(first) > 1:
+        if first == "-":
+            argv = ["create-or-attach", _current_directory_session_name(), *argv[1:]]
+        elif first == ":current":
+            argv = ["create-or-attach", first, *argv[1:]]
+        elif first.startswith(":") and len(first) > 1:
             argv = ["create-or-attach", first[1:], *argv[1:]]
         elif first.isdigit() and int(first) >= 1:
             argv = ["attach-recent", first, *argv[1:]]

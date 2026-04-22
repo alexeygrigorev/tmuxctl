@@ -93,6 +93,117 @@ def test_add_stores_message_file_path(monkeypatch, tmp_path: Path) -> None:
     assert captured["message_file_path"] == str(message_file)
 
 
+def test_add_accepts_current_session_alias(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.current_session_name", lambda: "rk-codex")
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.session_exists", lambda session_name: True)
+    monkeypatch.setattr("tmuxctl.cli._conn", lambda: object())
+    monkeypatch.setattr("tmuxctl.cli.parse_interval", lambda value: 1800)
+
+    class DummyJob:
+        id = 7
+        session_name = "rk-codex"
+        interval_seconds = 1800
+
+    def fake_create_job(conn, **kwargs):
+        captured.update(kwargs)
+        return DummyJob()
+
+    monkeypatch.setattr("tmuxctl.cli.storage.create_job", fake_create_job)
+
+    result = runner.invoke(
+        app,
+        ["add", ":current", "--every", "30m", "--message", "hello"],
+    )
+
+    assert result.exit_code == 0
+    assert captured["session_name"] == "rk-codex"
+
+
+def test_add_rejects_current_session_alias_outside_tmux(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tmuxctl.cli.tmux_api.current_session_name",
+        lambda: (_ for _ in ()).throw(RuntimeError("session alias ':current' requires running inside tmux")),
+    )
+
+    result = runner.invoke(
+        app,
+        ["add", ":current", "--every", "30m", "--message", "hello"],
+    )
+
+    assert result.exit_code == 1
+    assert "session alias ':current' requires running inside tmux" in result.output
+
+
+def test_edit_accepts_current_session_alias(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.current_session_name", lambda: "rk-codex")
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.session_exists", lambda session_name: True)
+    monkeypatch.setattr("tmuxctl.cli._conn", lambda: object())
+    monkeypatch.setattr(
+        "tmuxctl.cli.storage.get_job",
+        lambda conn, job_id: Job(
+            id=job_id,
+            session_name="old-session",
+            message="hello",
+            message_file_path=None,
+            interval_seconds=900,
+            enabled=True,
+            send_enter=True,
+            enter_delay_ms=200,
+            created_at="2026-04-03T00:00:00+00:00",
+            updated_at="2026-04-03T00:00:00+00:00",
+            last_run_at=None,
+            next_run_at="2026-04-03T00:15:00+00:00",
+        ),
+    )
+
+    def fake_update_job(conn, job_id, **kwargs):
+        captured["job_id"] = job_id
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("tmuxctl.cli.storage.update_job", fake_update_job)
+
+    result = runner.invoke(app, ["edit", "7", "--session", ":current"])
+
+    assert result.exit_code == 0
+    assert captured["job_id"] == 7
+    assert captured["session_name"] == "rk-codex"
+
+
+def test_edit_rejects_current_session_alias_outside_tmux(monkeypatch) -> None:
+    monkeypatch.setattr("tmuxctl.cli._conn", lambda: object())
+    monkeypatch.setattr(
+        "tmuxctl.cli.storage.get_job",
+        lambda conn, job_id: Job(
+            id=job_id,
+            session_name="old-session",
+            message="hello",
+            message_file_path=None,
+            interval_seconds=900,
+            enabled=True,
+            send_enter=True,
+            enter_delay_ms=200,
+            created_at="2026-04-03T00:00:00+00:00",
+            updated_at="2026-04-03T00:00:00+00:00",
+            last_run_at=None,
+            next_run_at="2026-04-03T00:15:00+00:00",
+        ),
+    )
+    monkeypatch.setattr(
+        "tmuxctl.cli.tmux_api.current_session_name",
+        lambda: (_ for _ in ()).throw(RuntimeError("session alias ':current' requires running inside tmux")),
+    )
+
+    result = runner.invoke(app, ["edit", "7", "--session", ":current"])
+
+    assert result.exit_code == 1
+    assert "session alias ':current' requires running inside tmux" in result.output
+
+
 def test_jobs_shows_inline_and_file_sources(monkeypatch) -> None:
     monkeypatch.setattr("tmuxctl.cli._conn", lambda: object())
     monkeypatch.setattr(
@@ -296,6 +407,20 @@ def test_complete_session_names_filters_matches(monkeypatch) -> None:
     assert cli._complete_session_names("rk-") == ["rk-codex", "rk-worker"]
 
 
+def test_current_directory_session_name_under_home() -> None:
+    assert cli._current_directory_session_name(
+        cwd=Path("/home/alexey/git/workshops"),
+        home=Path("/home/alexey"),
+    ) == "git-workshops"
+
+
+def test_current_directory_session_name_outside_home() -> None:
+    assert cli._current_directory_session_name(
+        cwd=Path("/var/tmp/demo space"),
+        home=Path("/home/alexey"),
+    ) == "var-tmp-demo-space"
+
+
 def test_root_group_shell_complete_adds_sessions(monkeypatch) -> None:
     monkeypatch.setattr("tmuxctl.cli.tmux_api.list_sessions", lambda: ["rk-codex", "rk-worker", "other"])
 
@@ -324,6 +449,35 @@ def test_main_rewrites_colon_shortcut(monkeypatch) -> None:
     cli.main()
 
     assert captured["args"] == ["create-or-attach", "rk-codex"]
+
+
+def test_main_keeps_current_session_alias_shortcut(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_app(*, args):
+        captured["args"] = args
+
+    monkeypatch.setattr(cli, "app", fake_app)
+    monkeypatch.setattr(sys, "argv", ["tmuxctl", ":current"])
+
+    cli.main()
+
+    assert captured["args"] == ["create-or-attach", ":current"]
+
+
+def test_main_rewrites_dash_shortcut(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_app(*, args):
+        captured["args"] = args
+
+    monkeypatch.setattr(cli, "app", fake_app)
+    monkeypatch.setattr(cli, "_current_directory_session_name", lambda: "git-workshops")
+    monkeypatch.setattr(sys, "argv", ["t", "-"])
+
+    cli.main()
+
+    assert captured["args"] == ["create-or-attach", "git-workshops"]
 
 
 def test_main_rewrites_plain_session_shortcut(monkeypatch) -> None:
@@ -384,6 +538,7 @@ def test_app_shows_recent_sessions_without_command(monkeypatch) -> None:
     assert "2    older" in result.output
     assert "Join a session: tmuxctl <id> or tmuxctl <session>" in result.output
     assert "Create a new one: tmuxctl :<session>" in result.output
+    assert "Use current folder: tmuxctl -" in result.output
     assert "Help: tmuxctl --help" in result.output
 
 
@@ -396,6 +551,7 @@ def test_app_shows_t_hints_without_command(monkeypatch) -> None:
     assert result.exit_code == 0
     assert "Join a session: t <id> or t <session>" in result.output
     assert "Create a new one: t :<session>" in result.output
+    assert "Use current folder: t -" in result.output
     assert "Help: t --help" in result.output
 
 

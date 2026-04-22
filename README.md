@@ -117,6 +117,19 @@ Rule of thumb:
 - `t codex` means attach only
 - `t :codex` means create or attach
 
+Use `t -` to derive the session name from the current directory and create-or-attach it:
+
+```bash
+cd ~/git/workshops
+t -
+```
+
+That resolves to:
+
+```bash
+t create-or-attach git-workshops
+```
+
 ### 4. Send a one-off message
 
 Send text directly:
@@ -148,6 +161,12 @@ Inline message:
 t add codex --every 15m --message "check status and continue"
 ```
 
+If you are already inside tmux, use `:current` to target the active session without typing its name:
+
+```bash
+t add :current --every 15m --message "check status and continue"
+```
+
 Shared prompt file:
 
 ```bash
@@ -171,6 +190,7 @@ t jobs
 t logs --limit 20
 t edit 2 --every 45m
 t edit 2 --message "check status and continue"
+t edit 2 --session :current
 t edit 3 --message-file prompts/rk-codex-progress.txt
 ```
 
