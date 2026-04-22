@@ -164,7 +164,10 @@ t add codex --every 15m --message "check status and continue"
 If you are already inside tmux, use `:current` to target the active session without typing its name:
 
 ```bash
-t add :current --every 15m --message "check status and continue"
+t add :current --every 15m --message \
+  "Check project status and continue. Help any blocked agents, review CI, and \
+  keep the pipeline moving. If nothing in the current batch needs attention, \
+  pick the next two ready issues per _docs/PROCESS.md and run the full workflow."
 ```
 
 Shared prompt file:

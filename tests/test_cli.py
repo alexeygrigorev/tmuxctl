@@ -414,6 +414,13 @@ def test_current_directory_session_name_under_home() -> None:
     ) == "git-workshops"
 
 
+def test_current_directory_session_name_for_home_directory() -> None:
+    assert cli._current_directory_session_name(
+        cwd=Path("/home/alexey"),
+        home=Path("/home/alexey"),
+    ) == "home-alexey"
+
+
 def test_current_directory_session_name_outside_home() -> None:
     assert cli._current_directory_session_name(
         cwd=Path("/var/tmp/demo space"),

@@ -80,10 +80,16 @@ def _current_directory_session_name(
     current = (cwd or Path.cwd()).resolve()
     home_path = (home or Path.home()).resolve()
 
-    try:
-        relative = current.relative_to(home_path)
-        parts = relative.parts or (current.name,)
-    except ValueError:
+    if current == home_path:
+        parts = ("home", current.name)
+    else:
+        try:
+            relative = current.relative_to(home_path)
+            parts = relative.parts or (current.name,)
+        except ValueError:
+            parts = tuple(part for part in current.parts if part not in {current.anchor, ""})
+
+    if not parts:
         parts = tuple(part for part in current.parts if part not in {current.anchor, ""})
 
     normalized_parts = []
