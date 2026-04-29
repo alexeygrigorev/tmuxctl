@@ -240,6 +240,22 @@ def set_job_enabled(conn: sqlite3.Connection, job_id: int, enabled: bool) -> Job
     return update_job(conn, job_id, enabled=enabled, next_run_at=next_run_at)
 
 
+def set_session_jobs_enabled(
+    conn: sqlite3.Connection,
+    *,
+    session_name: str,
+    enabled: bool,
+) -> int:
+    changed = 0
+    for job in list_jobs(conn, session_name=session_name):
+        if job.enabled == enabled:
+            continue
+        updated = set_job_enabled(conn, job.id, enabled)
+        if updated is not None:
+            changed += 1
+    return changed
+
+
 def delete_job(conn: sqlite3.Connection, job_id: int) -> bool:
     cursor = conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
     conn.commit()

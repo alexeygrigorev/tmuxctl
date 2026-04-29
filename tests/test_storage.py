@@ -119,3 +119,42 @@ def test_rename_session_jobs_updates_matching_jobs() -> None:
     assert len(storage.list_jobs(conn, session_name="new-name")) == 2
     assert len(storage.list_jobs(conn, session_name="old-name")) == 0
     assert len(storage.list_jobs(conn, session_name="other-name")) == 1
+
+
+def test_set_session_jobs_enabled_only_changes_matching_jobs() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    storage.init_db(conn)
+
+    first = storage.create_job(
+        conn,
+        session_name="demo",
+        message="one",
+        interval_seconds=60,
+    )
+    second = storage.create_job(
+        conn,
+        session_name="demo",
+        message="two",
+        interval_seconds=120,
+    )
+    other = storage.create_job(
+        conn,
+        session_name="other",
+        message="three",
+        interval_seconds=180,
+    )
+    storage.set_job_enabled(conn, second.id, False)
+
+    paused = storage.set_session_jobs_enabled(conn, session_name="demo", enabled=False)
+
+    assert paused == 1
+    assert storage.get_job(conn, first.id).enabled is False
+    assert storage.get_job(conn, second.id).enabled is False
+    assert storage.get_job(conn, other.id).enabled is True
+
+    resumed = storage.set_session_jobs_enabled(conn, session_name="demo", enabled=True)
+
+    assert resumed == 2
+    assert storage.get_job(conn, first.id).enabled is True
+    assert storage.get_job(conn, second.id).enabled is True

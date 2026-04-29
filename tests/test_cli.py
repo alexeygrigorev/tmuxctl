@@ -48,6 +48,7 @@ def test_add_rejects_both_message_and_message_file(monkeypatch, tmp_path: Path) 
     result = runner.invoke(
         app,
         [
+            "jobs",
             "add",
             "rk-codex",
             "--every",
@@ -85,7 +86,7 @@ def test_add_stores_message_file_path(monkeypatch, tmp_path: Path) -> None:
 
     result = runner.invoke(
         app,
-        ["add", "rk-codex", "--every", "30m", "--message-file", str(message_file)],
+        ["jobs", "add", "rk-codex", "--every", "30m", "--message-file", str(message_file)],
     )
 
     assert result.exit_code == 0
@@ -114,7 +115,7 @@ def test_add_accepts_current_session_alias(monkeypatch) -> None:
 
     result = runner.invoke(
         app,
-        ["add", ":current", "--every", "30m", "--message", "hello"],
+        ["jobs", "add", ":current", "--every", "30m", "--message", "hello"],
     )
 
     assert result.exit_code == 0
@@ -129,7 +130,7 @@ def test_add_rejects_current_session_alias_outside_tmux(monkeypatch) -> None:
 
     result = runner.invoke(
         app,
-        ["add", ":current", "--every", "30m", "--message", "hello"],
+        ["jobs", "add", ":current", "--every", "30m", "--message", "hello"],
     )
 
     assert result.exit_code == 1
@@ -167,7 +168,7 @@ def test_edit_accepts_current_session_alias(monkeypatch) -> None:
 
     monkeypatch.setattr("tmuxctl.cli.storage.update_job", fake_update_job)
 
-    result = runner.invoke(app, ["edit", "7", "--session", ":current"])
+    result = runner.invoke(app, ["jobs", "edit", "7", "--session", ":current"])
 
     assert result.exit_code == 0
     assert captured["job_id"] == 7
@@ -198,7 +199,7 @@ def test_edit_rejects_current_session_alias_outside_tmux(monkeypatch) -> None:
         lambda: (_ for _ in ()).throw(RuntimeError("session alias ':current' requires running inside tmux")),
     )
 
-    result = runner.invoke(app, ["edit", "7", "--session", ":current"])
+    result = runner.invoke(app, ["jobs", "edit", "7", "--session", ":current"])
 
     assert result.exit_code == 1
     assert "session alias ':current' requires running inside tmux" in result.output
@@ -248,6 +249,35 @@ def test_jobs_shows_inline_and_file_sources(monkeypatch) -> None:
     assert "file" in result.output
     assert "short inline prompt" in result.output
     assert "prompts/rk-codex-progress.txt" in result.output
+
+
+def test_jobs_list_subcommand_shows_inline_and_file_sources(monkeypatch) -> None:
+    monkeypatch.setattr("tmuxctl.cli._conn", lambda: object())
+    monkeypatch.setattr(
+        "tmuxctl.cli.storage.list_jobs",
+        lambda conn, session_name=None: [
+            Job(
+                id=1,
+                session_name="inline",
+                message="short inline prompt",
+                message_file_path=None,
+                interval_seconds=900,
+                enabled=True,
+                send_enter=True,
+                enter_delay_ms=200,
+                created_at="2026-04-03T00:00:00+00:00",
+                updated_at="2026-04-03T00:00:00+00:00",
+                last_run_at=None,
+                next_run_at="2026-04-03T00:15:00+00:00",
+            ),
+        ],
+    )
+
+    result = runner.invoke(app, ["jobs", "list"])
+
+    assert result.exit_code == 0
+    assert "SOURCE" in result.output
+    assert "short inline prompt" in result.output
 
 
 def test_list_shows_sorted_session_table(monkeypatch) -> None:
@@ -346,6 +376,90 @@ def test_kill_aborts_without_confirmation(monkeypatch) -> None:
     assert result.exit_code == 1
     assert called["kill"] is False
     assert "Aborted." in result.output
+
+
+def test_pause_current_pauses_jobs_for_current_session(monkeypatch) -> None:
+    monkeypatch.setattr("tmuxctl.cli._conn", lambda: object())
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.current_session_name", lambda: "rk-codex")
+    monkeypatch.setattr(
+        "tmuxctl.cli.storage.list_jobs",
+        lambda conn, session_name=None: [
+            Job(
+                id=1,
+                session_name="rk-codex",
+                message="hello",
+                message_file_path=None,
+                interval_seconds=900,
+                enabled=True,
+                send_enter=True,
+                enter_delay_ms=200,
+                created_at="2026-04-03T00:00:00+00:00",
+                updated_at="2026-04-03T00:00:00+00:00",
+                last_run_at=None,
+                next_run_at="2026-04-03T00:15:00+00:00",
+            ),
+        ],
+    )
+    monkeypatch.setattr("tmuxctl.cli.storage.set_session_jobs_enabled", lambda conn, *, session_name, enabled: 1)
+
+    result = runner.invoke(app, ["jobs", "pause-current"])
+
+    assert result.exit_code == 0
+    assert "Paused 1 job(s) for session rk-codex" in result.output
+
+
+def test_pause_current_rejects_when_session_has_no_jobs(monkeypatch) -> None:
+    monkeypatch.setattr("tmuxctl.cli._conn", lambda: object())
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.current_session_name", lambda: "rk-codex")
+    monkeypatch.setattr("tmuxctl.cli.storage.list_jobs", lambda conn, session_name=None: [])
+
+    result = runner.invoke(app, ["jobs", "pause-current"])
+
+    assert result.exit_code == 1
+    assert "no jobs found for tmux session 'rk-codex'" in result.output
+
+
+def test_resume_current_resumes_jobs_for_current_session(monkeypatch) -> None:
+    monkeypatch.setattr("tmuxctl.cli._conn", lambda: object())
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.current_session_name", lambda: "rk-codex")
+    monkeypatch.setattr(
+        "tmuxctl.cli.storage.list_jobs",
+        lambda conn, session_name=None: [
+            Job(
+                id=1,
+                session_name="rk-codex",
+                message="hello",
+                message_file_path=None,
+                interval_seconds=900,
+                enabled=False,
+                send_enter=True,
+                enter_delay_ms=200,
+                created_at="2026-04-03T00:00:00+00:00",
+                updated_at="2026-04-03T00:00:00+00:00",
+                last_run_at=None,
+                next_run_at="2026-04-03T00:15:00+00:00",
+            ),
+        ],
+    )
+    monkeypatch.setattr("tmuxctl.cli.storage.set_session_jobs_enabled", lambda conn, *, session_name, enabled: 1)
+
+    result = runner.invoke(app, ["jobs", "resume-current"])
+
+    assert result.exit_code == 0
+    assert "Resumed 1 job(s) for session rk-codex" in result.output
+
+
+def test_pause_current_requires_running_inside_tmux(monkeypatch) -> None:
+    monkeypatch.setattr("tmuxctl.cli._conn", lambda: object())
+    monkeypatch.setattr(
+        "tmuxctl.cli.tmux_api.current_session_name",
+        lambda: (_ for _ in ()).throw(RuntimeError("session alias ':current' requires running inside tmux")),
+    )
+
+    result = runner.invoke(app, ["jobs", "pause-current"])
+
+    assert result.exit_code == 1
+    assert "session alias ':current' requires running inside tmux" in result.output
 
 
 def test_rename_by_session_name_updates_jobs(monkeypatch) -> None:
@@ -501,6 +615,20 @@ def test_main_rewrites_plain_session_shortcut(monkeypatch) -> None:
     assert captured["args"] == ["attach", "rk-codex"]
 
 
+def test_main_does_not_rewrite_removed_job_root_command(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_app(*, args):
+        captured["args"] = args
+
+    monkeypatch.setattr(cli, "app", fake_app)
+    monkeypatch.setattr(sys, "argv", ["tmuxctl", "add", "rk-codex"])
+
+    cli.main()
+
+    assert captured["args"] == ["add", "rk-codex"]
+
+
 def test_main_rewrites_numeric_shortcut(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
@@ -521,9 +649,19 @@ def test_app_shows_help_without_command() -> None:
     assert result.exit_code == 0
     assert "Usage: " in result.output
     assert "COMMAND [ARGS]..." in result.output
+    assert "Manage recurring jobs." in result.output
     assert "Rename a tmux session and retarget its scheduled jobs." in result.output
     assert "List tmux sessions sorted by creation time or activity." in result.output
     assert "Send a message to a tmux session." in result.output
+
+
+def test_jobs_help_shows_nested_commands() -> None:
+    result = runner.invoke(app, ["jobs", "--help"], terminal_width=120)
+
+    assert result.exit_code == 0
+    assert "Create a recurring message job for a tmux session." in result.output
+    assert "Pause all scheduled jobs for the current tmux session." in result.output
+    assert "Resume all scheduled jobs for the current tmux session." in result.output
     assert "Run the scheduler daemon or process due jobs once." in result.output
 
 

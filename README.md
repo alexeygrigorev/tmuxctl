@@ -158,13 +158,13 @@ t send codex --message "status?" --no-enter
 Inline message:
 
 ```bash
-t add codex --every 15m --message "check status and continue"
+t jobs add codex --every 15m --message "check status and continue"
 ```
 
 If you are already inside tmux, use `:current` to target the active session without typing its name:
 
 ```bash
-t add :current --every 15m --message \
+t jobs add :current --every 15m --message \
   "Check project status and continue. Help any blocked agents, review CI, and \
   keep the pipeline moving. If nothing in the current batch needs attention, \
   pick the next two ready issues per _docs/PROCESS.md and run the full workflow."
@@ -173,7 +173,7 @@ t add :current --every 15m --message \
 Shared prompt file:
 
 ```bash
-t add rk-codex --every 30m --message-file prompts/rk-codex-progress.txt
+t jobs add rk-codex --every 30m --message-file prompts/rk-codex-progress.txt
 ```
 
 When a job uses `--message-file`, `tmuxctl` stores the file path and reads the file at send time. Updating the file updates future scheduled runs.
@@ -181,7 +181,7 @@ When a job uses `--message-file`, `tmuxctl` stores the file path and reads the f
 ### 2. Run the scheduler
 
 ```bash
-t daemon
+t jobs daemon
 ```
 
 Recurring jobs only run while the daemon is running.
@@ -190,22 +190,26 @@ Recurring jobs only run while the daemon is running.
 
 ```bash
 t jobs
-t logs --limit 20
-t edit 2 --every 45m
-t edit 2 --message "check status and continue"
-t edit 2 --session :current
-t edit 3 --message-file prompts/rk-codex-progress.txt
+t jobs list
+t jobs show 2
+t jobs logs --limit 20
+t jobs edit 2 --every 45m
+t jobs edit 2 --message "check status and continue"
+t jobs edit 2 --session :current
+t jobs edit 3 --message-file prompts/rk-codex-progress.txt
 ```
 
 Useful job controls:
 
 ```bash
-t pause 3
-t resume 3
-t remove 3
+t jobs pause 3
+t jobs pause-current
+t jobs resume 3
+t jobs resume-current
+t jobs remove 3
 ```
 
-If a scheduled job fails 3 runs in a row, `tmuxctl daemon` removes it automatically.
+If a scheduled job fails 3 runs in a row, `tmuxctl jobs daemon` removes it automatically.
 
 ## Session Cleanup
 
@@ -276,11 +280,11 @@ Recurring jobs are stored in:
 
 The scheduler is database-driven:
 
-- `add` creates jobs
-- `edit`, `pause`, `resume`, and `remove` modify jobs
-- `daemon` polls for due jobs and runs them
+- `jobs add` creates jobs
+- `jobs edit`, `jobs pause`, `jobs resume`, and `jobs remove` modify jobs
+- `jobs daemon` polls for due jobs and runs them
 
-If you want recurring jobs to survive logout or reboot, keep `t daemon` running with something like:
+If you want recurring jobs to survive logout or reboot, keep `t jobs daemon` running with something like:
 
 - `systemd --user`
 - `launchd`
@@ -297,7 +301,7 @@ After=default.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/tmuxctl daemon
+ExecStart=%h/.local/bin/tmuxctl jobs daemon
 Restart=on-failure
 RestartSec=5
 

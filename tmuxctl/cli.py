@@ -28,10 +28,12 @@ ROOT_COMMAND_NAMES = {
     "rename",
     "attach-last",
     "attach-recent",
-    "add",
     "jobs",
+    "add",
     "pause",
+    "pause-current-jobs",
     "resume",
+    "resume-current-jobs",
     "remove",
     "edit",
     "logs",
@@ -50,6 +52,11 @@ class RootGroup(TyperGroup):
 app = typer.Typer(
     cls=RootGroup,
     help="Control tmux sessions and recurring messages.",
+    no_args_is_help=False,
+)
+
+jobs_app = typer.Typer(
+    help="Manage recurring jobs.",
     no_args_is_help=False,
 )
 
@@ -185,6 +192,13 @@ def _resolve_session_name(name: str) -> str:
         _fail(str(exc))
 
 
+def _require_session_jobs(conn, session_name: str) -> list[Job]:
+    jobs = storage.list_jobs(conn, session_name=session_name)
+    if not jobs:
+        _fail(f"no jobs found for tmux session '{session_name}'")
+    return jobs
+
+
 def _print_jobs(jobs: list[Job]) -> None:
     typer.echo("ID  ENABLED  SESSION  EVERY  DELAY  SOURCE  NEXT RUN             DETAIL")
     for job in jobs:
@@ -198,6 +212,22 @@ def _print_jobs(jobs: list[Job]) -> None:
             f"{format_interval(job.interval_seconds):<6} {job.enter_delay_ms:<6} "
             f"{source:<7} {next_run:<20} {detail}"
         )
+
+
+def _print_job_detail(job: Job) -> None:
+    source = "file" if job.message_file_path else "inline"
+    typer.echo(f"ID:       {job.id}")
+    typer.echo(f"Session:  {job.session_name}")
+    typer.echo(f"Enabled:  {'yes' if job.enabled else 'no'}")
+    typer.echo(f"Every:    {format_interval(job.interval_seconds)}")
+    typer.echo(f"Delay:    {job.enter_delay_ms}ms")
+    typer.echo(f"Source:   {source}")
+    if job.message_file_path:
+        typer.echo(f"File:     {job.message_file_path}")
+    typer.echo(f"Next run: {display_timestamp(job.next_run_at)}")
+    if job.last_run_at:
+        typer.echo(f"Last run: {display_timestamp(job.last_run_at)}")
+    typer.echo(f"Message:\n{job.message}")
 
 
 def _print_logs(entries: list[LogEntry]) -> None:
@@ -266,12 +296,36 @@ def _resolve_session_target(target: str, by: SessionOrder) -> str:
     return target
 
 
+def _list_jobs(*, session: str | None = None) -> None:
+    conn = _conn()
+    if session is not None:
+        session = _resolve_session_name(session)
+    _print_jobs(storage.list_jobs(conn, session_name=session))
+
+
+def _show_job(job_id: int) -> None:
+    conn = _conn()
+    job = storage.get_job(conn, job_id)
+    if job is None:
+        typer.echo(f"No job with id {job_id}")
+        raise typer.Exit(1)
+    _print_job_detail(job)
+
+
 @app.callback(invoke_without_command=True)
 def root(ctx: typer.Context) -> None:
     if ctx.invoked_subcommand is not None:
         return
     sessions = _load_sessions(by=SessionOrder.created, limit=10)
     _print_recent_sessions(sessions)
+    raise typer.Exit()
+
+
+@jobs_app.callback(invoke_without_command=True)
+def jobs_root(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand is not None:
+        return
+    _list_jobs()
     raise typer.Exit()
 
 
@@ -498,8 +552,8 @@ def attach_recent(
         _fail(str(exc))
 
 
-@app.command()
-def add(
+@jobs_app.command("add")
+def jobs_add(
     session_name: Annotated[str, typer.Argument(autocompletion=_complete_session_names)],
     every: Annotated[str, typer.Option("--every", help="Recurring interval like 15m or 2h.")],
     message: Annotated[str | None, typer.Option("--message", help="Message text to send.")] = None,
@@ -535,40 +589,27 @@ def add(
     typer.echo(f"Created job {job.id} for {job.session_name} every {format_interval(job.interval_seconds)}")
 
 
-@app.command()
-def jobs(
-    job_id: Annotated[int | None, typer.Argument(help="Show details for a specific job.")] = None,
+@jobs_app.command("list")
+def jobs_list(
     session: Annotated[
         str | None,
         typer.Option("--session", "-s", help="Only list jobs for the given tmux session."),
     ] = None,
 ) -> None:
-    """List scheduled jobs or show details for one job."""
-    conn = _conn()
-    if job_id is None:
-        _print_jobs(storage.list_jobs(conn, session_name=session))
-        return
-    job = storage.get_job(conn, job_id)
-    if job is None:
-        typer.echo(f"No job with id {job_id}")
-        raise typer.Exit(1)
-    source = "file" if job.message_file_path else "inline"
-    typer.echo(f"ID:       {job.id}")
-    typer.echo(f"Session:  {job.session_name}")
-    typer.echo(f"Enabled:  {'yes' if job.enabled else 'no'}")
-    typer.echo(f"Every:    {format_interval(job.interval_seconds)}")
-    typer.echo(f"Delay:    {job.enter_delay_ms}ms")
-    typer.echo(f"Source:   {source}")
-    if job.message_file_path:
-        typer.echo(f"File:     {job.message_file_path}")
-    typer.echo(f"Next run: {display_timestamp(job.next_run_at)}")
-    if job.last_run_at:
-        typer.echo(f"Last run: {display_timestamp(job.last_run_at)}")
-    typer.echo(f"Message:\n{job.message}")
+    """List scheduled jobs."""
+    _list_jobs(session=session)
 
 
-@app.command()
-def pause(
+@jobs_app.command("show")
+def jobs_show(
+    job_id: Annotated[int, typer.Argument(help="Show details for a specific job.")],
+) -> None:
+    """Show details for one job."""
+    _show_job(job_id)
+
+
+@jobs_app.command("pause")
+def jobs_pause(
     job_id: int,
 ) -> None:
     """Pause a scheduled job."""
@@ -578,8 +619,22 @@ def pause(
     typer.echo(f"Paused job {job_id}")
 
 
-@app.command()
-def resume(
+@jobs_app.command("pause-current")
+def jobs_pause_current() -> None:
+    """Pause all scheduled jobs for the current tmux session."""
+    conn = _conn()
+    session_name = _resolve_session_name(":current")
+    _require_session_jobs(conn, session_name)
+    changed = storage.set_session_jobs_enabled(
+        conn,
+        session_name=session_name,
+        enabled=False,
+    )
+    typer.echo(f"Paused {changed} job(s) for session {session_name}")
+
+
+@jobs_app.command("resume")
+def jobs_resume(
     job_id: int,
 ) -> None:
     """Resume a paused job."""
@@ -589,8 +644,22 @@ def resume(
     typer.echo(f"Resumed job {job_id}")
 
 
-@app.command()
-def remove(
+@jobs_app.command("resume-current")
+def jobs_resume_current() -> None:
+    """Resume all scheduled jobs for the current tmux session."""
+    conn = _conn()
+    session_name = _resolve_session_name(":current")
+    _require_session_jobs(conn, session_name)
+    changed = storage.set_session_jobs_enabled(
+        conn,
+        session_name=session_name,
+        enabled=True,
+    )
+    typer.echo(f"Resumed {changed} job(s) for session {session_name}")
+
+
+@jobs_app.command("remove")
+def jobs_remove(
     job_id: int,
 ) -> None:
     """Remove a scheduled job."""
@@ -600,8 +669,8 @@ def remove(
     typer.echo(f"Removed job {job_id}")
 
 
-@app.command()
-def edit(
+@jobs_app.command("edit")
+def jobs_edit(
     job_id: int,
     message: Annotated[str | None, typer.Option("--message", help="Replace the stored message text.")] = None,
     message_file: Annotated[Path | None, typer.Option("--message-file", help="Replace the stored message text from a file.")] = None,
@@ -667,8 +736,8 @@ def edit(
     typer.echo(f"Updated job {job_id}")
 
 
-@app.command()
-def logs(
+@jobs_app.command("logs")
+def jobs_logs(
     limit: Annotated[int, typer.Option("--limit", min=1, help="Number of log rows to show.")] = 20,
 ) -> None:
     """Show recent delivery logs."""
@@ -676,8 +745,8 @@ def logs(
     _print_logs(storage.list_logs(conn, limit=limit))
 
 
-@app.command()
-def daemon(
+@jobs_app.command("daemon")
+def jobs_daemon(
     poll_interval: Annotated[int, typer.Option("--poll-interval", min=1, help="Seconds between job polls.")] = 3,
     run_once: Annotated[bool, typer.Option("--run-once", help="Process due jobs once and exit.")] = False,
 ) -> None:
@@ -687,6 +756,9 @@ def daemon(
         typer.echo(f"Processed {count} due job(s)")
         return
     scheduler.run_daemon(poll_interval=poll_interval)
+
+
+app.add_typer(jobs_app, name="jobs")
 
 
 def main() -> None:
