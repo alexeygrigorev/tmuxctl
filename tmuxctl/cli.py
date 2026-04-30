@@ -18,6 +18,7 @@ ROOT_COMMAND_NAMES = {
     "list",
     "l",
     "ls",
+    "j",
     "recent",
     "r",
     "send",
@@ -759,6 +760,7 @@ def jobs_daemon(
 
 
 app.add_typer(jobs_app, name="jobs")
+app.add_typer(jobs_app, name="j", hidden=True)
 
 
 def main() -> None:

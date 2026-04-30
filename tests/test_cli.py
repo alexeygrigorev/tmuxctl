@@ -280,6 +280,35 @@ def test_jobs_list_subcommand_shows_inline_and_file_sources(monkeypatch) -> None
     assert "short inline prompt" in result.output
 
 
+def test_j_alias_lists_jobs(monkeypatch) -> None:
+    monkeypatch.setattr("tmuxctl.cli._conn", lambda: object())
+    monkeypatch.setattr(
+        "tmuxctl.cli.storage.list_jobs",
+        lambda conn, session_name=None: [
+            Job(
+                id=7,
+                session_name="rk-codex",
+                message="check status",
+                message_file_path=None,
+                interval_seconds=1800,
+                enabled=True,
+                send_enter=True,
+                enter_delay_ms=200,
+                created_at="2026-04-03T00:00:00+00:00",
+                updated_at="2026-04-03T00:00:00+00:00",
+                last_run_at=None,
+                next_run_at="2026-04-03T00:30:00+00:00",
+            ),
+        ],
+    )
+
+    result = runner.invoke(app, ["j"])
+
+    assert result.exit_code == 0
+    assert "ID  ENABLED  SESSION" in result.output
+    assert "7   yes      rk-codex" in result.output
+
+
 def test_list_shows_sorted_session_table(monkeypatch) -> None:
     monkeypatch.setattr(
         "tmuxctl.cli.tmux_api.list_session_info",
@@ -627,6 +656,20 @@ def test_main_does_not_rewrite_removed_job_root_command(monkeypatch) -> None:
     cli.main()
 
     assert captured["args"] == ["add", "rk-codex"]
+
+
+def test_main_does_not_rewrite_jobs_alias(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_app(*, args):
+        captured["args"] = args
+
+    monkeypatch.setattr(cli, "app", fake_app)
+    monkeypatch.setattr(sys, "argv", ["tmuxctl", "j"])
+
+    cli.main()
+
+    assert captured["args"] == ["j"]
 
 
 def test_main_rewrites_numeric_shortcut(monkeypatch) -> None:
