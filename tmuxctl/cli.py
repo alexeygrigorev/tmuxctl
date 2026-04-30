@@ -84,6 +84,7 @@ def _current_directory_session_name(
     *,
     cwd: Path | None = None,
     home: Path | None = None,
+    suffix: str | None = None,
 ) -> str:
     current = (cwd or Path.cwd()).resolve()
     home_path = (home or Path.home()).resolve()
@@ -109,7 +110,13 @@ def _current_directory_session_name(
     if not normalized_parts:
         _fail("unable to derive session name from current directory")
 
-    return "-".join(normalized_parts)
+    session_name = "-".join(normalized_parts)
+    if suffix is not None:
+        normalized_suffix = re.sub(r"[^A-Za-z0-9._-]+", "-", suffix).strip("-")
+        if not normalized_suffix:
+            _fail("unable to derive session suffix")
+        session_name = f"{session_name}-{normalized_suffix}"
+    return session_name
 
 
 def _fail(message: str, *, code: int = 1) -> None:
@@ -274,7 +281,7 @@ def _print_recent_sessions(sessions: list[SessionInfo]) -> None:
     typer.echo("")
     typer.echo(f"Join a session: {program_name} <id> or {program_name} <session>")
     typer.echo(f"Create a new one: {program_name} :<session>")
-    typer.echo(f"Use current folder: {program_name} -")
+    typer.echo(f"Use current folder: {program_name} - or {program_name} -name")
     typer.echo(f"Help: {program_name} --help")
 
 
@@ -770,6 +777,12 @@ def main() -> None:
         first = argv[0]
         if first == "-":
             argv = ["create-or-attach", _current_directory_session_name(), *argv[1:]]
+        elif first.startswith("-") and not first.startswith("--") and len(first) > 1:
+            argv = [
+                "create-or-attach",
+                _current_directory_session_name(suffix=first[1:]),
+                *argv[1:],
+            ]
         elif first == ":current":
             argv = ["create-or-attach", first, *argv[1:]]
         elif first.startswith(":") and len(first) > 1:

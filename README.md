@@ -130,6 +130,19 @@ That resolves to:
 t create-or-attach git-workshops
 ```
 
+If you want another session for the same folder, add any suffix:
+
+```bash
+cd ~/git/workshops
+t -asd
+```
+
+That resolves to:
+
+```bash
+t create-or-attach git-workshops-asd
+```
+
 ### 4. Send a one-off message
 
 Send text directly:

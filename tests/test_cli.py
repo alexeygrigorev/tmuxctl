@@ -564,6 +564,22 @@ def test_current_directory_session_name_for_home_directory() -> None:
     ) == "home-alexey"
 
 
+def test_current_directory_session_name_with_suffix() -> None:
+    assert cli._current_directory_session_name(
+        cwd=Path("/home/alexey/git/workshops"),
+        home=Path("/home/alexey"),
+        suffix="asd",
+    ) == "git-workshops-asd"
+
+
+def test_current_directory_session_name_normalizes_suffix() -> None:
+    assert cli._current_directory_session_name(
+        cwd=Path("/home/alexey/git/workshops"),
+        home=Path("/home/alexey"),
+        suffix="feature/test",
+    ) == "git-workshops-feature-test"
+
+
 def test_current_directory_session_name_outside_home() -> None:
     assert cli._current_directory_session_name(
         cwd=Path("/var/tmp/demo space"),
@@ -628,6 +644,35 @@ def test_main_rewrites_dash_shortcut(monkeypatch) -> None:
     cli.main()
 
     assert captured["args"] == ["create-or-attach", "git-workshops"]
+
+
+def test_main_rewrites_dash_suffix_shortcut(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_app(*, args):
+        captured["args"] = args
+
+    monkeypatch.setattr(cli, "app", fake_app)
+    monkeypatch.setattr(cli, "_current_directory_session_name", lambda suffix=None: f"git-workshops-{suffix}")
+    monkeypatch.setattr(sys, "argv", ["t", "-asd"])
+
+    cli.main()
+
+    assert captured["args"] == ["create-or-attach", "git-workshops-asd"]
+
+
+def test_main_keeps_double_dash_option(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_app(*, args):
+        captured["args"] = args
+
+    monkeypatch.setattr(cli, "app", fake_app)
+    monkeypatch.setattr(sys, "argv", ["tmuxctl", "--help"])
+
+    cli.main()
+
+    assert captured["args"] == ["--help"]
 
 
 def test_main_rewrites_plain_session_shortcut(monkeypatch) -> None:
@@ -726,7 +771,7 @@ def test_app_shows_recent_sessions_without_command(monkeypatch) -> None:
     assert "2    older" in result.output
     assert "Join a session: tmuxctl <id> or tmuxctl <session>" in result.output
     assert "Create a new one: tmuxctl :<session>" in result.output
-    assert "Use current folder: tmuxctl -" in result.output
+    assert "Use current folder: tmuxctl - or tmuxctl -name" in result.output
     assert "Help: tmuxctl --help" in result.output
 
 
@@ -739,7 +784,7 @@ def test_app_shows_t_hints_without_command(monkeypatch) -> None:
     assert result.exit_code == 0
     assert "Join a session: t <id> or t <session>" in result.output
     assert "Create a new one: t :<session>" in result.output
-    assert "Use current folder: t -" in result.output
+    assert "Use current folder: t - or t -name" in result.output
     assert "Help: t --help" in result.output
 
 
