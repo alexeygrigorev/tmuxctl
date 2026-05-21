@@ -49,6 +49,7 @@ Short form:
 
 ```bash
 t l
+tl
 ```
 
 Typical output:
@@ -281,7 +282,7 @@ If you are working from this repository and want its virtualenv binaries on your
 ./install.sh
 ```
 
-That appends this repo's `.venv/bin` to `~/.bashrc` and does nothing if the line is already present.
+That appends this repo's `.venv/bin` and `alias tl='t l'` to `~/.bashrc`, skipping any line that is already present.
 
 ## How Scheduling Works
 
