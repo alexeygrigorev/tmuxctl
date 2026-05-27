@@ -683,9 +683,10 @@ wheels = [
 
 [[package]]
 name = "tmuxctl"
-version = "0.1.5"
+version = "0.1.6"
 source = { editable = "." }
 dependencies = [
+    { name = "click" },
     { name = "typer" },
 ]
 
@@ -696,7 +697,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "typer", specifier = ">=0.12,<1" }]
+requires-dist = [
+    { name = "click", specifier = ">=8,<9" },
+    { name = "typer", specifier = ">=0.12,<1" },
+]
 
 [package.metadata.requires-dev]
 dev = [
