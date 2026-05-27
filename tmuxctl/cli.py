@@ -443,11 +443,15 @@ def send(
 @app.command()
 def attach(
     session_name: Annotated[str, typer.Argument(autocompletion=_complete_session_names)],
+    resize_window: Annotated[
+        bool,
+        typer.Option("--resize-window", "-r", help="Run resize-window -A after attaching."),
+    ] = False,
 ) -> None:
     """Attach to an existing tmux session."""
     session_name = _resolve_session_name(session_name)
     try:
-        tmux_api.attach_session(session_name)
+        tmux_api.attach_session(session_name, resize_window=resize_window)
     except Exception as exc:
         _fail(str(exc))
 
@@ -455,11 +459,23 @@ def attach(
 @app.command("create-or-attach")
 def create_or_attach(
     session_name: Annotated[str, typer.Argument(autocompletion=_complete_session_names)],
+    command: Annotated[
+        list[str] | None,
+        typer.Argument(help="Command to run when creating a new session."),
+    ] = None,
+    resize_window: Annotated[
+        bool,
+        typer.Option("--resize-window", "-r", help="Run resize-window -A after attaching."),
+    ] = False,
 ) -> None:
     """Create a tmux session if needed, then attach to it."""
     session_name = _resolve_session_name(session_name)
     try:
-        tmux_api.create_or_attach_session(session_name)
+        tmux_api.create_or_attach_session(
+            session_name,
+            resize_window=resize_window,
+            shell_command=command,
+        )
     except Exception as exc:
         _fail(str(exc))
 
@@ -524,6 +540,10 @@ def rename(
 @app.command("attach-last")
 def attach_last(
     by: Annotated[SessionOrder, typer.Option("--by", help="Pick the newest session by creation time or last activity.")] = SessionOrder.created,
+    resize_window: Annotated[
+        bool,
+        typer.Option("--resize-window", "-r", help="Run resize-window -A after attaching."),
+    ] = False,
 ) -> None:
     """Attach to the newest tmux session."""
     try:
@@ -533,7 +553,7 @@ def attach_last(
     if not sessions:
         _fail("no tmux sessions found")
     try:
-        tmux_api.attach_session(sessions[0].name)
+        tmux_api.attach_session(sessions[0].name, resize_window=resize_window)
     except Exception as exc:
         _fail(str(exc))
 
@@ -542,6 +562,10 @@ def attach_last(
 def attach_recent(
     index: Annotated[int, typer.Argument(help="1-based index from the recent sessions list.")] = 1,
     by: Annotated[SessionOrder, typer.Option("--by", help="Pick sessions by creation time or last activity.")] = SessionOrder.created,
+    resize_window: Annotated[
+        bool,
+        typer.Option("--resize-window", "-r", help="Run resize-window -A after attaching."),
+    ] = False,
 ) -> None:
     """Attach to a tmux session from the recent-session list."""
     if index < 1:
@@ -555,7 +579,7 @@ def attach_recent(
     if index > len(sessions):
         _fail(f"only {len(sessions)} tmux session(s) found")
     try:
-        tmux_api.attach_session(sessions[index - 1].name)
+        tmux_api.attach_session(sessions[index - 1].name, resize_window=resize_window)
     except Exception as exc:
         _fail(str(exc))
 

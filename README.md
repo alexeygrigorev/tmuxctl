@@ -83,6 +83,13 @@ That is equivalent to:
 t attach codex
 ```
 
+Ask tmux to resize the window after attaching:
+
+```bash
+t git-llm-zoomcamp --resize-window
+t 1 -r
+```
+
 Attach by recency index:
 
 ```bash
@@ -129,6 +136,12 @@ That resolves to:
 
 ```bash
 t create-or-attach git-workshops
+```
+
+Pass a command after `t -` to run it only when a new session is created:
+
+```bash
+t - cy
 ```
 
 If you want another session for the same folder, add any suffix:

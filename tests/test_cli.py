@@ -646,6 +646,21 @@ def test_main_rewrites_dash_shortcut(monkeypatch) -> None:
     assert captured["args"] == ["create-or-attach", "git-workshops"]
 
 
+def test_main_rewrites_dash_shortcut_with_create_command(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_app(*, args):
+        captured["args"] = args
+
+    monkeypatch.setattr(cli, "app", fake_app)
+    monkeypatch.setattr(cli, "_current_directory_session_name", lambda: "git-workshops")
+    monkeypatch.setattr(sys, "argv", ["t", "-", "cy"])
+
+    cli.main()
+
+    assert captured["args"] == ["create-or-attach", "git-workshops", "cy"]
+
+
 def test_main_rewrites_dash_suffix_shortcut(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
@@ -659,6 +674,29 @@ def test_main_rewrites_dash_suffix_shortcut(monkeypatch) -> None:
     cli.main()
 
     assert captured["args"] == ["create-or-attach", "git-workshops-asd"]
+
+
+def test_create_or_attach_passes_create_command(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_create_or_attach_session(
+        session_name: str,
+        *,
+        resize_window: bool = False,
+        shell_command: list[str] | None = None,
+    ) -> None:
+        captured["session_name"] = session_name
+        captured["resize_window"] = resize_window
+        captured["shell_command"] = shell_command
+
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.create_or_attach_session", fake_create_or_attach_session)
+
+    result = runner.invoke(app, ["create-or-attach", "git-workshops", "cy"])
+
+    assert result.exit_code == 0
+    assert captured["session_name"] == "git-workshops"
+    assert captured["resize_window"] is False
+    assert captured["shell_command"] == ["cy"]
 
 
 def test_main_keeps_double_dash_option(monkeypatch) -> None:
@@ -687,6 +725,36 @@ def test_main_rewrites_plain_session_shortcut(monkeypatch) -> None:
     cli.main()
 
     assert captured["args"] == ["attach", "rk-codex"]
+
+
+def test_main_rewrites_plain_session_shortcut_with_resize_window(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_app(*, args):
+        captured["args"] = args
+
+    monkeypatch.setattr(cli, "app", fake_app)
+    monkeypatch.setattr(sys, "argv", ["tmuxctl", "rk-codex", "--resize-window"])
+
+    cli.main()
+
+    assert captured["args"] == ["attach", "rk-codex", "--resize-window"]
+
+
+def test_attach_passes_resize_window(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_attach_session(session_name: str, *, resize_window: bool = False) -> None:
+        captured["session_name"] = session_name
+        captured["resize_window"] = resize_window
+
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.attach_session", fake_attach_session)
+
+    result = runner.invoke(app, ["attach", "git-llm-zoomcamp", "--resize-window"])
+
+    assert result.exit_code == 0
+    assert captured["session_name"] == "git-llm-zoomcamp"
+    assert captured["resize_window"] is True
 
 
 def test_main_does_not_rewrite_removed_job_root_command(monkeypatch) -> None:
@@ -729,6 +797,43 @@ def test_main_rewrites_numeric_shortcut(monkeypatch) -> None:
     cli.main()
 
     assert captured["args"] == ["attach-recent", "12"]
+
+
+def test_main_rewrites_numeric_shortcut_with_resize_window_short_flag(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_app(*, args):
+        captured["args"] = args
+
+    monkeypatch.setattr(cli, "app", fake_app)
+    monkeypatch.setattr(sys, "argv", ["t", "1", "-r"])
+
+    cli.main()
+
+    assert captured["args"] == ["attach-recent", "1", "-r"]
+
+
+def test_attach_recent_passes_resize_window_short_flag(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "tmuxctl.cli.tmux_api.list_session_info",
+        lambda: [
+            SessionInfo(name="git-llm-zoomcamp", created_at=3, activity_at=3),
+        ],
+    )
+
+    def fake_attach_session(session_name: str, *, resize_window: bool = False) -> None:
+        captured["session_name"] = session_name
+        captured["resize_window"] = resize_window
+
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.attach_session", fake_attach_session)
+
+    result = runner.invoke(app, ["attach-recent", "1", "-r"])
+
+    assert result.exit_code == 0
+    assert captured["session_name"] == "git-llm-zoomcamp"
+    assert captured["resize_window"] is True
 
 
 def test_app_shows_help_without_command() -> None:

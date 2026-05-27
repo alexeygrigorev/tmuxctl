@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import time
@@ -110,32 +111,40 @@ def current_session_name() -> str:
     return session_name
 
 
-def attach_session(session_name: str) -> None:
+def attach_session(session_name: str, *, resize_window: bool = False) -> None:
     if not session_exists(session_name):
         raise TmuxSessionNotFoundError(f"tmux session '{session_name}' was not found")
 
     inside_tmux = bool(os.environ.get("TMUX"))
     command = ["switch-client", "-t", session_name] if inside_tmux else ["attach-session", "-t", session_name]
+    if resize_window:
+        command.extend([";", "resize-window", "-A"])
     result = _run_tmux(command, check=False)
     if result.returncode != 0:
         stderr = (result.stderr or "").strip()
         raise TmuxCommandError(stderr or f"failed to attach to '{session_name}'")
 
 
-def create_or_attach_session(session_name: str) -> None:
+def create_or_attach_session(
+    session_name: str,
+    *,
+    resize_window: bool = False,
+    shell_command: list[str] | None = None,
+) -> None:
     if session_exists(session_name):
-        attach_session(session_name)
+        attach_session(session_name, resize_window=resize_window)
         return
 
-    inside_tmux = bool(os.environ.get("TMUX"))
-    command = ["new-session", "-d", "-s", session_name] if inside_tmux else ["new-session", "-s", session_name]
+    command = ["new-session", "-d", "-s", session_name]
     result = _run_tmux(command, check=False)
     if result.returncode != 0:
         stderr = (result.stderr or "").strip()
         raise TmuxCommandError(stderr or f"failed to create session '{session_name}'")
 
-    if inside_tmux:
-        attach_session(session_name)
+    if shell_command:
+        send_keys(session_name, shlex.join(shell_command), press_enter=True, enter_delay_ms=0)
+
+    attach_session(session_name, resize_window=resize_window)
 
 
 def kill_session(session_name: str) -> None:
