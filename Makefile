@@ -1,7 +1,15 @@
-.PHONY: test publish-build publish-clean release
+.PHONY: test package-smoke publish-build publish-clean release
 
 test:
 	uv run pytest
+
+package-smoke:
+	rm -rf .venv-smoke dist
+	uv build
+	python -m venv .venv-smoke
+	.venv-smoke/bin/python -m pip install --upgrade pip
+	.venv-smoke/bin/python -m pip install dist/*.whl
+	.venv-smoke/bin/t --help >/dev/null
 
 publish-build:
 	uv run hatch build

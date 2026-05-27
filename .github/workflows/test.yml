@@ -18,3 +18,13 @@ jobs:
       - uses: astral-sh/setup-uv@v4
       - run: uv sync --dev
       - run: uv run pytest
+
+  package-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v4
+      - run: make package-smoke

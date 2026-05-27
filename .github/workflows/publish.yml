@@ -12,7 +12,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v6
+      - run: uv run pytest
       - run: uv build
+      - name: Smoke test built wheel
+        run: |
+          python -m venv .venv-smoke
+          .venv-smoke/bin/python -m pip install --upgrade pip
+          .venv-smoke/bin/python -m pip install dist/*.whl
+          .venv-smoke/bin/t --help >/dev/null
       - name: Verify version matches tag
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
