@@ -557,6 +557,13 @@ def test_current_directory_session_name_under_home() -> None:
     ) == "git-workshops"
 
 
+def test_current_directory_session_name_normalizes_tmux_separators() -> None:
+    assert cli._current_directory_session_name(
+        cwd=Path("/home/alexey/git/datatalksclub.github.io"),
+        home=Path("/home/alexey"),
+    ) == "git-datatalksclub_github_io"
+
+
 def test_current_directory_session_name_for_home_directory() -> None:
     assert cli._current_directory_session_name(
         cwd=Path("/home/alexey"),
@@ -699,6 +706,29 @@ def test_create_or_attach_passes_create_command(monkeypatch) -> None:
     assert captured["shell_command"] == ["cy"]
 
 
+def test_create_or_attach_normalizes_tmux_separators(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_create_or_attach_session(
+        session_name: str,
+        *,
+        resize_window: bool = False,
+        shell_command: list[str] | None = None,
+    ) -> None:
+        captured["session_name"] = session_name
+        captured["resize_window"] = resize_window
+        captured["shell_command"] = shell_command
+
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.create_or_attach_session", fake_create_or_attach_session)
+
+    result = runner.invoke(app, ["create-or-attach", "git-datatalksclub.github.io", "cy"])
+
+    assert result.exit_code == 0
+    assert captured["session_name"] == "git-datatalksclub_github_io"
+    assert captured["resize_window"] is False
+    assert captured["shell_command"] == ["cy"]
+
+
 def test_main_keeps_double_dash_option(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
@@ -755,6 +785,22 @@ def test_attach_passes_resize_window(monkeypatch) -> None:
     assert result.exit_code == 0
     assert captured["session_name"] == "git-llm-zoomcamp"
     assert captured["resize_window"] is True
+
+
+def test_attach_normalizes_tmux_separators(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_attach_session(session_name: str, *, resize_window: bool = False) -> None:
+        captured["session_name"] = session_name
+        captured["resize_window"] = resize_window
+
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.attach_session", fake_attach_session)
+
+    result = runner.invoke(app, ["attach", "git-datatalksclub.github.io"])
+
+    assert result.exit_code == 0
+    assert captured["session_name"] == "git-datatalksclub_github_io"
+    assert captured["resize_window"] is False
 
 
 def test_main_does_not_rewrite_removed_job_root_command(monkeypatch) -> None:

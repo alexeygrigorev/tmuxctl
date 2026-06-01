@@ -103,7 +103,7 @@ def _current_directory_session_name(
 
     normalized_parts = []
     for part in parts:
-        normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", part).strip("-")
+        normalized = _normalize_session_name_part(part)
         if normalized:
             normalized_parts.append(normalized)
 
@@ -112,11 +112,20 @@ def _current_directory_session_name(
 
     session_name = "-".join(normalized_parts)
     if suffix is not None:
-        normalized_suffix = re.sub(r"[^A-Za-z0-9._-]+", "-", suffix).strip("-")
+        normalized_suffix = _normalize_session_name_part(suffix)
         if not normalized_suffix:
             _fail("unable to derive session suffix")
         session_name = f"{session_name}-{normalized_suffix}"
     return session_name
+
+
+def _normalize_session_name_part(value: str) -> str:
+    normalized = re.sub(r"[.:]+", "_", value)
+    return re.sub(r"[^A-Za-z0-9_-]+", "-", normalized).strip("-")
+
+
+def _normalize_session_name(value: str) -> str:
+    return _normalize_session_name_part(value)
 
 
 def _fail(message: str, *, code: int = 1) -> None:
@@ -193,7 +202,10 @@ def _require_job(conn, job_id: int) -> Job:
 
 def _resolve_session_name(name: str) -> str:
     if name != ":current":
-        return name
+        normalized = _normalize_session_name(name)
+        if not normalized:
+            _fail("unable to derive session name")
+        return normalized
     try:
         return tmux_api.current_session_name()
     except Exception as exc:
