@@ -1169,6 +1169,7 @@ def test_describe_capped_session(monkeypatch) -> None:
             "MemoryPeak": str(5 * 1024**3),
             "MemoryMax": str(12 * 1024**3),
             "MemorySwapCurrent": "0",
+            "MemorySwapMax": str(8 * 1024**3),
             "CPUUsageNSec": str(133 * 1_000_000_000),
             "TasksCurrent": "42",
         },
@@ -1181,6 +1182,7 @@ def test_describe_capped_session(monkeypatch) -> None:
     assert "robust.slice/tmuxctl-proj.scope" in result.output
     assert "3.0G / 12.0G" in result.output
     assert "peak 5.0G" in result.output
+    assert "swap 0B / 8.0G" in result.output
     assert "2m13s" in result.output
     assert "Tasks:    42" in result.output
 

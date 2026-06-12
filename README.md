@@ -196,6 +196,22 @@ the whole process tree for that session. If one session exceeds its hard
 instead of letting pressure spill into the shared tmux server and unrelated
 sessions.
 
+The actual create command is shaped like this:
+
+```bash
+tmux new-session -d -s my-session -c /repo \
+  systemd-run --user --scope \
+    --unit=tmuxctl-my-session \
+    -p MemoryMax=30G \
+    -p MemorySwapMax=8G \
+    -p Slice=robust.slice \
+    --quiet -- \
+    /bin/bash -l
+```
+
+See [docs/cgroups.md](docs/cgroups.md) for a more detailed explanation of
+systemd, slices, scopes, the exact launch command, and how limits apply.
+
 By default, new sessions get `MemoryMax=12G` and `MemorySwapMax=8G`. The memory
 cap protects the tmux server from runaway work; the swap allowance lets a
 transient spike survive instead of going straight to an OOM kill.

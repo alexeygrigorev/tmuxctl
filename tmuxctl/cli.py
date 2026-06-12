@@ -973,6 +973,7 @@ _SCOPE_PROPS = [
     "MemoryPeak",
     "MemoryMax",
     "MemorySwapCurrent",
+    "MemorySwapMax",
     "CPUUsageNSec",
     "TasksCurrent",
 ]
@@ -1030,9 +1031,13 @@ def _describe_scope_lines(session_name: str, panes: list) -> list[str]:
     peak = _scope_bytes(values, "MemoryPeak")
     if peak is not None:
         extras.append(f"peak {format_bytes(peak)}")
-    swap = _scope_bytes(values, "MemorySwapCurrent")
-    if swap is not None:
-        extras.append(f"swap {format_bytes(swap)}")
+    swap_current = _scope_bytes(values, "MemorySwapCurrent")
+    swap_cap = _scope_bytes(values, "MemorySwapMax")
+    if swap_current is not None:
+        swap_str = format_bytes(swap_current)
+        if swap_cap is not None:
+            swap_str = f"{swap_str} / {format_bytes(swap_cap)}"
+        extras.append(f"swap {swap_str}")
     mem = format_bytes(current) if current is not None else "-"
     cap_str = format_bytes(cap) if cap is not None else "unlimited"
     extra_str = f"  ({', '.join(extras)})" if extras else ""
