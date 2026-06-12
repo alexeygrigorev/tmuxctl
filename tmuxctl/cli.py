@@ -584,19 +584,25 @@ def limit(
         str | None,
         typer.Option("--swap", help="New live MemorySwapMax for this session's scope, e.g. 8G."),
     ] = None,
+    high: Annotated[
+        str | None,
+        typer.Option("--high", help="New live MemoryHigh soft-throttle threshold, e.g. 24G."),
+    ] = None,
     by: Annotated[
         SessionOrder,
         typer.Option("--by", help="Interpret numeric IDs using session creation time or last activity."),
     ] = SessionOrder.created,
 ) -> None:
-    """Change memory/swap limits for an already-running tmuxctl session."""
+    """Change memory/swap/high limits for an already-running tmuxctl session."""
     session_name = _resolve_session_target(target, by)
     try:
-        tmux_api.set_session_limits(session_name, mem=mem, swap=swap)
+        tmux_api.set_session_limits(session_name, mem=mem, swap=swap, high=high)
     except Exception as exc:
         _fail(str(exc))
 
     parts = []
+    if high is not None:
+        parts.append(f"MemoryHigh={high}")
     if mem is not None:
         parts.append(f"MemoryMax={mem}")
     if swap is not None:
@@ -942,12 +948,16 @@ def doctor() -> None:
             typer.echo("(no live sessions)")
         for name in live:
             unit = robust.scope_unit_name(name)
-            props = robust.scope_properties(unit, ["MemoryMax", "MemorySwapMax", "MemoryPeak"])
+            props = robust.scope_properties(
+                unit, ["MemoryHigh", "MemoryMax", "MemorySwapMax", "MemoryPeak"]
+            )
+            high = props.get("MemoryHigh") or "-"
             mem = props.get("MemoryMax") or "-"
             swap = props.get("MemorySwapMax") or "-"
             peak = props.get("MemoryPeak") or "-"
             typer.echo(
-                f"  {name:<24} MemoryMax={mem}  MemorySwapMax={swap}  MemoryPeak={peak}"
+                f"  {name:<24} MemoryHigh={high}  MemoryMax={mem}  "
+                f"MemorySwapMax={swap}  MemoryPeak={peak}"
             )
 
     typer.echo("")

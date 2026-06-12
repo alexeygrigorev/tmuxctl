@@ -172,7 +172,7 @@ It is idempotent (a no-op if the session already exists), resolves the memory ca
 the same way as the other verbs (`--mem` flag → project `cgroups.toml` /
 `pyproject [tool.tmuxctl]` → default), and prints the session name on success.
 
-#### Memory and swap limits
+#### Memory, throttle, and swap limits
 
 tmux has one server process that owns all sessions. If one pane starts a
 runaway build, test VM, emulator, or agent process and the machine runs out of
@@ -185,16 +185,18 @@ tmuxctl avoids that by starting each new session's login shell through
 ```text
 tmux server
 └── robust.slice
-    ├── tmuxctl-project-a.scope  MemoryMax=12G MemorySwapMax=8G
-    └── tmuxctl-project-b.scope  MemoryMax=24G MemorySwapMax=8G
+    ├── tmuxctl-project-a.scope  MemoryHigh=10.2G MemoryMax=12G MemorySwapMax=8G
+    └── tmuxctl-project-b.scope  MemoryHigh=20.4G MemoryMax=24G MemorySwapMax=8G
 ```
 
 The tmux server stays outside those per-session scopes. Commands launched from
 a pane inherit the cgroup of that session's shell, so memory accounting covers
-the whole process tree for that session. If one session exceeds its hard
-`MemoryMax`, systemd/kernel OOM handling kills processes inside that scope
-instead of letting pressure spill into the shared tmux server and unrelated
-sessions.
+the whole process tree for that session. As a scope crosses its soft
+`MemoryHigh` threshold the kernel throttles it and reclaims pages (spilling cold
+ones to swap), so heavy work **slows down and waits** under transient pressure.
+Only if it still climbs to the hard `MemoryMax` does systemd/kernel OOM handling
+kill processes inside that scope — and even then the pressure stays contained
+instead of spilling into the shared tmux server and unrelated sessions.
 
 The actual create command is shaped like this:
 
@@ -202,6 +204,7 @@ The actual create command is shaped like this:
 tmux new-session -d -s my-session -c /repo \
   systemd-run --user --scope \
     --unit=tmuxctl-my-session \
+    -p MemoryHigh=25.5G \
     -p MemoryMax=30G \
     -p MemorySwapMax=8G \
     -p Slice=robust.slice \
@@ -212,15 +215,18 @@ tmux new-session -d -s my-session -c /repo \
 See [docs/cgroups.md](docs/cgroups.md) for a more detailed explanation of
 systemd, slices, scopes, the exact launch command, and how limits apply.
 
-By default, new sessions get `MemoryMax=12G` and `MemorySwapMax=8G`. The memory
-cap protects the tmux server from runaway work; the swap allowance lets a
-transient spike survive instead of going straight to an OOM kill.
+By default, new sessions get `MemoryMax=12G`, `MemorySwapMax=8G`, and
+`MemoryHigh` at 85% of `MemoryMax`. The memory cap protects the tmux server from
+runaway work; `MemoryHigh` makes a session throttle/reclaim before that hard
+wall; and the swap allowance gives it room to spill cold pages so a transient
+spike survives instead of going straight to an OOM kill.
 
 Set per-user defaults in `~/.config/tmuxctl/cgroups.toml`:
 
 ```toml
 default_mem = "24G"
 default_swap = "8G"
+default_high = "20G"   # optional; omit to use 85% of mem
 slice_max = "56G"
 slice_swap_max = "16G"
 ```
@@ -230,6 +236,7 @@ Set per-project defaults in either `cgroups.toml`:
 ```toml
 mem = "24G"
 swap = "8G"
+high = "20G"   # optional; defaults to 85% of mem
 ```
 
 or `pyproject.toml`:
@@ -238,9 +245,11 @@ or `pyproject.toml`:
 [tool.tmuxctl]
 mem = "24G"
 swap = "8G"
+high = "20G"
 ```
 
 `swap = "0"` is still valid when you want hard no-swap scope behavior.
+When `high` is omitted, it tracks `mem` automatically at 85%.
 
 `--mem` and config defaults apply when a session is created:
 
@@ -254,14 +263,14 @@ For an existing tmuxctl-created session, change the live systemd scope with
 
 ```bash
 t limit my-session --mem 30G
-t limit my-session --mem 30G --swap 8G
+t limit my-session --mem 30G --swap 8G --high 24G
 t limit :current --swap 12G
 ```
 
 Under the hood, this updates the session's systemd scope:
 
 ```bash
-systemctl --user set-property tmuxctl-my-session.scope MemoryMax=24G MemorySwapMax=8G
+systemctl --user set-property tmuxctl-my-session.scope MemoryHigh=24G MemoryMax=30G MemorySwapMax=8G
 ```
 
 Live changes are not written back to config. Use `~/.config/tmuxctl/cgroups.toml`

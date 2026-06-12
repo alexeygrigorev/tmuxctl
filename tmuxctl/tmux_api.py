@@ -256,7 +256,8 @@ def _new_session_command(session_name: str, cwd: str, *, flag: str | None) -> li
             )
         except Exception:  # noqa: BLE001 - slice bound is best-effort
             pass
-        wrapped = robust.scope_wrap(_login_shell(), unit, mem, swap=swap)
+        high = _resolve_session_high(cwd, mem)
+        wrapped = robust.scope_wrap(_login_shell(), unit, mem, swap=swap, high=high)
         return ["new-session", "-d", "-s", session_name, "-c", cwd, *wrapped]
 
     if mem is not None:
@@ -281,6 +282,14 @@ def _resolve_session_swap(cwd: str) -> str:
         return robust.resolve_swap(cwd=Path(cwd))
     except Exception:  # noqa: BLE001 - never block session creation on config
         return robust.DEFAULT_SWAP
+
+
+def _resolve_session_high(cwd: str, mem: str) -> str:
+    """Resolve the per-session MemoryHigh soft-throttle for a new session."""
+    try:
+        return robust.resolve_high(mem, cwd=Path(cwd))
+    except Exception:  # noqa: BLE001 - never block session creation on config
+        return robust.default_high_for(mem)
 
 
 def process_cgroup(pid: int) -> str | None:
@@ -319,16 +328,20 @@ def set_session_limits(
     *,
     mem: str | None = None,
     swap: str | None = None,
+    high: str | None = None,
 ) -> None:
-    """Update MemoryMax/MemorySwapMax for an already-running tmuxctl scope."""
-    if mem is None and swap is None:
-        raise TmuxCommandError("provide --mem, --swap, or both")
+    """Update MemoryMax/MemorySwapMax/MemoryHigh for a running tmuxctl scope."""
+    if mem is None and swap is None and high is None:
+        raise TmuxCommandError("provide --mem, --swap, --high, or a combination")
     if not session_exists(session_name):
         raise TmuxSessionNotFoundError(f"tmux session '{session_name}' was not found")
     if not robust.systemd_available():
         raise TmuxCommandError("systemd-run unavailable; session limits cannot be changed")
 
     properties: list[str] = []
+    if high is not None:
+        robust.parse_size(high)
+        properties.append(f"MemoryHigh={high}")
     if mem is not None:
         robust.parse_size(mem)
         properties.append(f"MemoryMax={mem}")

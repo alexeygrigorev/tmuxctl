@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
 
@@ -46,11 +45,14 @@ def test_format_size_roundtrip() -> None:
 # ---------------------------------------------------------------------------
 def test_scope_wrap_builds_expected_argv() -> None:
     argv = robust.scope_wrap(["/bin/bash", "-l"], "tmuxctl-proj", "7G")
+    expected_high = robust.format_size(robust.parse_size("7G") * 85 // 100)
     assert argv == [
         "systemd-run",
         "--user",
         "--scope",
         "--unit=tmuxctl-proj",
+        "-p",
+        f"MemoryHigh={expected_high}",
         "-p",
         "MemoryMax=7G",
         "-p",
@@ -62,6 +64,19 @@ def test_scope_wrap_builds_expected_argv() -> None:
         "/bin/bash",
         "-l",
     ]
+
+
+def test_scope_wrap_high_defaults_to_85_percent_of_mem() -> None:
+    argv = robust.scope_wrap(["true"], "tmuxctl-proj", "20G")
+    assert f"MemoryHigh={robust.default_high_for('20G')}" in argv
+    # 85% of 20G stays strictly below the hard MemoryMax wall.
+    high_idx = argv.index("MemoryHigh=" + robust.default_high_for("20G"))
+    assert robust.parse_size(argv[high_idx].split("=", 1)[1]) < robust.parse_size("20G")
+
+
+def test_scope_wrap_accepts_explicit_high() -> None:
+    argv = robust.scope_wrap(["true"], "tmuxctl-proj", "20G", high="12G")
+    assert "MemoryHigh=12G" in argv
 
 
 def test_scope_wrap_accepts_explicit_swap() -> None:
@@ -236,6 +251,49 @@ def test_resolve_swap_falls_back_to_builtin_default(monkeypatch, tmp_path) -> No
 def test_resolve_swap_allows_zero_override(tmp_path) -> None:
     result = robust.resolve_swap(flag="0", env={}, cwd=tmp_path, user_config={})
     assert result == "0"
+
+
+# ---------------------------------------------------------------------------
+# resolve_high precedence (MemoryHigh soft-throttle threshold)
+# ---------------------------------------------------------------------------
+def test_resolve_high_flag_wins(monkeypatch, tmp_path) -> None:
+    (tmp_path / "cgroups.toml").write_text('high = "10G"\n', encoding="utf-8")
+    monkeypatch.setattr(robust, "read_user_config", lambda *a, **k: {"default_high": "9G"})
+    result = robust.resolve_high(
+        "30G", flag="24G", env={"ROBUST_TMUX_HIGH": "16G"}, cwd=tmp_path
+    )
+    assert result == "24G"
+
+
+def test_resolve_high_env_beats_project_and_config(monkeypatch, tmp_path) -> None:
+    (tmp_path / "cgroups.toml").write_text('high = "10G"\n', encoding="utf-8")
+    monkeypatch.setattr(robust, "_git_root", lambda start: None)
+    result = robust.resolve_high(
+        "30G", env={"ROBUST_TMUX_HIGH": "16G"}, cwd=tmp_path, user_config={"default_high": "9G"}
+    )
+    assert result == "16G"
+
+
+def test_resolve_high_reads_project_cgroups_toml(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(robust, "_git_root", lambda start: None)
+    (tmp_path / "cgroups.toml").write_text('high = "10G"\n', encoding="utf-8")
+    result = robust.resolve_high("30G", env={}, cwd=tmp_path, user_config={})
+    assert result == "10G"
+
+
+def test_resolve_high_config_beats_default(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(robust, "_git_root", lambda start: None)
+    result = robust.resolve_high("30G", env={}, cwd=tmp_path, user_config={"default_high": "9G"})
+    assert result == "9G"
+
+
+def test_resolve_high_falls_back_to_computed_fraction(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(robust, "_git_root", lambda start: None)
+    result = robust.resolve_high("20G", env={}, cwd=tmp_path, user_config={})
+    assert result == robust.default_high_for("20G")
+    # The computed default is 85% of mem, strictly below MemoryMax.
+    assert robust.parse_size(result) == robust.parse_size("20G") * 85 // 100
+    assert robust.parse_size(result) < robust.parse_size("20G")
 
 
 # ---------------------------------------------------------------------------

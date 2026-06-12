@@ -30,6 +30,10 @@ else:  # Python 3.10: tomllib is not in the stdlib
 DEFAULT_MEM = "12G"
 DEFAULT_RESERVE = "8G"
 DEFAULT_SWAP = "8G"
+# MemoryHigh defaults to this fraction of MemoryMax: the kernel reclaims and
+# throttles allocations above MemoryHigh, only hard-killing at MemoryMax, so a
+# scope slows down and waits under transient pressure instead of OOM-dying.
+DEFAULT_HIGH_FRACTION = 85  # percent of mem
 
 _SLICE_NAME = "robust.slice"
 _PYPROJECT_FILE_NAME = "pyproject.toml"
@@ -133,7 +137,14 @@ def read_user_config(path: Path | None = None) -> dict[str, str]:
     except (OSError, tomllib.TOMLDecodeError):
         return {}
     result: dict[str, str] = {}
-    for key in ("default_mem", "default_swap", "slice_max", "slice_swap_max", "reserve"):
+    for key in (
+        "default_mem",
+        "default_swap",
+        "default_high",
+        "slice_max",
+        "slice_swap_max",
+        "reserve",
+    ):
         if key in data and data[key] is not None:
             result[key] = str(data[key])
     return result
@@ -298,6 +309,56 @@ def resolve_swap(
     return DEFAULT_SWAP
 
 
+def default_high_for(mem: str) -> str:
+    """The computed MemoryHigh default: ``DEFAULT_HIGH_FRACTION`` % of ``mem``."""
+    high_bytes = parse_size(mem) * DEFAULT_HIGH_FRACTION // 100
+    return format_size(high_bytes)
+
+
+def resolve_high(
+    mem: str,
+    *,
+    flag: str | None = None,
+    env: dict[str, str] | None = None,
+    cwd: Path | None = None,
+    user_config: dict[str, str] | None = None,
+) -> str:
+    """Resolve the per-session MemoryHigh soft-throttle threshold.
+
+    Precedence mirrors ``resolve_swap``, except the built-in default is
+    *computed* from ``mem`` (``DEFAULT_HIGH_FRACTION`` % of MemoryMax) rather
+    than a fixed constant:
+      1. explicit value
+      2. env var ``ROBUST_TMUX_HIGH``
+      3. per-project ``cgroups.toml`` or ``pyproject.toml`` ``[tool.tmuxctl]``
+      4. user config ``default_high``
+      5. computed ``DEFAULT_HIGH_FRACTION`` % of ``mem``
+    """
+    env = os.environ if env is None else env
+
+    if flag is not None:
+        parse_size(flag)
+        return flag
+
+    env_high = env.get("ROBUST_TMUX_HIGH")
+    if env_high is not None:
+        parse_size(env_high)
+        return env_high
+
+    project_high = read_project_value("high", cwd=cwd)
+    if project_high is not None:
+        parse_size(project_high)
+        return project_high
+
+    cfg = read_user_config() if user_config is None else user_config
+    if cfg.get("default_high") is not None:
+        value = cfg["default_high"]
+        parse_size(value)
+        return value
+
+    return default_high_for(mem)
+
+
 def resolve_slice_max(
     *,
     user_config: dict[str, str] | None = None,
@@ -406,21 +467,38 @@ def ensure_slice(
 # ---------------------------------------------------------------------------
 # Scope wrapping
 # ---------------------------------------------------------------------------
-def scope_wrap(cmd: list[str], unit: str, mem: str, *, swap: str | None = None) -> list[str]:
+def scope_wrap(
+    cmd: list[str],
+    unit: str,
+    mem: str,
+    *,
+    swap: str | None = None,
+    high: str | None = None,
+) -> list[str]:
     """Wrap ``cmd`` so it runs inside a memory-capped systemd --user scope.
 
     Builds the ``systemd-run`` argv. ``cmd`` is the login shell (or any
     command) to run inside the scope; every command launched within the
     session inherits the cgroup cap.
+
+    ``MemoryHigh`` (the soft throttle threshold, default
+    ``DEFAULT_HIGH_FRACTION`` % of ``mem``) makes the scope reclaim/throttle
+    under pressure before the hard ``MemoryMax`` wall, so heavy work slows and
+    waits instead of being OOM-killed. ``MemorySwapMax`` gives it room to spill
+    cold pages while it throttles.
     """
     resolved_swap = resolve_swap() if swap is None else swap
     parse_size(resolved_swap)
+    resolved_high = resolve_high(mem) if high is None else high
+    parse_size(resolved_high)
 
     return [
         "systemd-run",
         "--user",
         "--scope",
         f"--unit={unit}",
+        "-p",
+        f"MemoryHigh={resolved_high}",
         "-p",
         f"MemoryMax={mem}",
         "-p",

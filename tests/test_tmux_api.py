@@ -303,6 +303,31 @@ def test_set_session_limits_updates_scope_properties(monkeypatch) -> None:
     ]
 
 
+def test_set_session_limits_updates_high(monkeypatch) -> None:
+    monkeypatch.setattr(tmux_api, "session_exists", lambda session_name: True)
+    monkeypatch.setattr(robust, "systemd_available", lambda: True)
+    calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(tmux_api.subprocess, "run", fake_run)
+
+    tmux_api.set_session_limits("proj", mem="30G", high="24G")
+
+    assert calls == [
+        [
+            "systemctl",
+            "--user",
+            "set-property",
+            "tmuxctl-proj.scope",
+            "MemoryHigh=24G",
+            "MemoryMax=30G",
+        ]
+    ]
+
+
 def test_set_session_limits_requires_limit(monkeypatch) -> None:
     with pytest.raises(tmux_api.TmuxCommandError, match="provide --mem"):
         tmux_api.set_session_limits("proj")
