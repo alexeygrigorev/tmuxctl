@@ -14,7 +14,14 @@ from typer.core import TyperGroup
 
 from tmuxctl import robust, scheduler, storage, strays as strays_mod, tmux_api
 from tmuxctl.models import Job, LogEntry, SessionInfo
-from tmuxctl.utils import display_timestamp, display_unix_timestamp, format_interval, parse_interval
+from tmuxctl.utils import (
+    display_timestamp,
+    display_unix_timestamp,
+    format_bytes,
+    format_cpu_time,
+    format_interval,
+    parse_interval,
+)
 
 ROOT_COMMAND_NAMES = {
     "list",
@@ -42,6 +49,8 @@ ROOT_COMMAND_NAMES = {
     "logs",
     "daemon",
     "doctor",
+    "describe",
+    "info",
     "strays",
     "reap",
 }
@@ -889,6 +898,133 @@ def doctor() -> None:
         typer.echo(f"  orphaned tmux server pids: {report.orphan_pids}")
     if not dead_found:
         typer.echo("(none)")
+
+
+_SCOPE_PROPS = [
+    "ActiveState",
+    "ControlGroup",
+    "MemoryCurrent",
+    "MemoryPeak",
+    "MemoryMax",
+    "MemorySwapCurrent",
+    "CPUUsageNSec",
+    "TasksCurrent",
+]
+
+
+def _scope_bytes(values: dict[str, str], key: str) -> int | None:
+    """Parse a numeric systemd byte/count property, treating unset as None."""
+    raw = values.get(key, "")
+    if raw in ("", "[not set]", "infinity"):
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _uncapped_scope_lines(session_name: str, panes: list) -> list[str]:
+    """Scope section for a session with no active robust cgroup.
+
+    Reads the real cgroup of the session's process (from /proc) so a session
+    started outside tmuxctl shows where it actually lives — a plain
+    ``session-NN.scope`` rather than a memory-capped ``tmuxctl-*.scope``.
+    """
+    lines = ["Scope:    none — session is uncapped (not started by tmuxctl)"]
+    ref = next((pane for pane in panes if pane.active), panes[0] if panes else None)
+    if ref is not None and ref.pid:
+        cgroup = tmux_api.process_cgroup(ref.pid)
+        if cgroup:
+            lines.append(f"Cgroup:   {cgroup}")
+    lines.append("          No per-session RAM/CPU cap; the box-wide OOM-killer can")
+    lines.append("          take the whole tmux server. Start a capped one with:")
+    lines.append(f"          {_program_name()} :{session_name} --mem 24G")
+    return lines
+
+
+def _describe_scope_lines(session_name: str, panes: list) -> list[str]:
+    """Render the cgroup / memory / CPU section for a session's robust scope."""
+    unit = robust.scope_unit_name(session_name)
+    scope = f"{unit}.scope"
+    if not robust.systemd_available():
+        return ["Scope:    none — systemd-run unavailable, session runs uncapped"]
+
+    values = robust.scope_properties(unit, _SCOPE_PROPS)
+    if values.get("ActiveState") != "active":
+        return _uncapped_scope_lines(session_name, panes)
+
+    lines = [f"Scope:    {scope}  (active)"]
+    cgroup = values.get("ControlGroup")
+    if cgroup:
+        lines.append(f"Cgroup:   {cgroup}")
+
+    current = _scope_bytes(values, "MemoryCurrent")
+    cap = _scope_bytes(values, "MemoryMax")
+    extras = []
+    peak = _scope_bytes(values, "MemoryPeak")
+    if peak is not None:
+        extras.append(f"peak {format_bytes(peak)}")
+    swap = _scope_bytes(values, "MemorySwapCurrent")
+    if swap is not None:
+        extras.append(f"swap {format_bytes(swap)}")
+    mem = format_bytes(current) if current is not None else "-"
+    cap_str = format_bytes(cap) if cap is not None else "unlimited"
+    extra_str = f"  ({', '.join(extras)})" if extras else ""
+    lines.append(f"Memory:   {mem} / {cap_str}{extra_str}")
+
+    cpu = _scope_bytes(values, "CPUUsageNSec")
+    if cpu is not None:
+        lines.append(f"CPU time: {format_cpu_time(cpu)}")
+    tasks = values.get("TasksCurrent")
+    if tasks and tasks not in ("[not set]", "infinity"):
+        lines.append(f"Tasks:    {tasks}")
+    return lines
+
+
+@app.command()
+def describe(
+    target: Annotated[
+        str,
+        typer.Argument(
+            autocompletion=_complete_session_names,
+            help="Session name, ':current', or a recent-session index.",
+        ),
+    ],
+    by: Annotated[
+        SessionOrder,
+        typer.Option("--by", help="Interpret numeric IDs using session creation time or last activity."),
+    ] = SessionOrder.created,
+) -> None:
+    """Describe a session: process, working directory, cgroup, RAM, and CPU."""
+    session_name = _resolve_session_target(target, by)
+    if not tmux_api.session_exists(session_name):
+        _fail(f"tmux session '{session_name}' was not found")
+    try:
+        panes = tmux_api.session_panes(session_name)
+    except Exception as exc:
+        _fail(str(exc))
+
+    windows = len({pane.window_index for pane in panes})
+    typer.echo(f"Session:  {session_name}  ({windows} window(s), {len(panes)} pane(s))")
+    typer.echo("")
+    typer.echo("WIN.PANE  PID      COMMAND          DIRECTORY")
+    for pane in panes:
+        marker = "*" if pane.active else ""
+        typer.echo(
+            f"{pane.label + marker:<9} {pane.pid:<8} {pane.command:<16} {pane.cwd}"
+        )
+
+    typer.echo("")
+    for line in _describe_scope_lines(session_name, panes):
+        typer.echo(line)
+
+
+@app.command("info", hidden=True)
+def describe_alias(
+    target: Annotated[str, typer.Argument(autocompletion=_complete_session_names)],
+    by: Annotated[SessionOrder, typer.Option("--by")] = SessionOrder.created,
+) -> None:
+    describe(target=target, by=by)
 
 
 def _print_stray_report(report: strays_mod.StrayReport, *, stale: int | None) -> None:

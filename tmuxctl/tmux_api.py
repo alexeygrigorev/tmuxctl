@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 from tmuxctl import robust
-from tmuxctl.models import SessionInfo
+from tmuxctl.models import PaneInfo, SessionInfo
 
 
 class TmuxError(RuntimeError):
@@ -92,6 +92,50 @@ def list_session_info() -> list[SessionInfo]:
             )
         )
     return sessions
+
+
+_PANE_FORMAT = (
+    "#{window_index}\t#{pane_index}\t#{pane_pid}\t"
+    "#{pane_current_command}\t#{pane_current_path}\t#{pane_active}"
+)
+
+
+def session_panes(session_name: str) -> list[PaneInfo]:
+    """Every pane in a session, with its top process, pid, and cwd.
+
+    Lists panes across all windows (``list-panes -s``). The pane's
+    ``pane_current_command`` is the foreground process tmux sees and
+    ``pane_current_path`` its working directory, so no /proc reads are needed.
+    """
+    if not session_exists(session_name):
+        raise TmuxSessionNotFoundError(f"tmux session '{session_name}' was not found")
+
+    result = _run_tmux(
+        ["list-panes", "-s", "-t", session_name, "-F", _PANE_FORMAT], check=False
+    )
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        raise TmuxCommandError(stderr or f"unable to list panes for '{session_name}'")
+
+    panes: list[PaneInfo] = []
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) < 6:
+            continue
+        window_index, pane_index, pane_pid, command, cwd, active = parts[:6]
+        panes.append(
+            PaneInfo(
+                window_index=int(window_index) if window_index.isdigit() else 0,
+                pane_index=int(pane_index) if pane_index.isdigit() else 0,
+                pid=int(pane_pid) if pane_pid.isdigit() else 0,
+                command=command,
+                cwd=cwd,
+                active=active not in ("0", ""),
+            )
+        )
+    return panes
 
 
 def session_exists(name: str) -> bool:
@@ -182,6 +226,24 @@ def _resolve_session_mem(cwd: str, *, flag: str | None = None) -> str | None:
         return robust.resolve_mem(flag=flag, cwd=Path(cwd))
     except Exception:  # noqa: BLE001 - never block session creation on config
         return robust.DEFAULT_MEM
+
+
+def process_cgroup(pid: int) -> str | None:
+    """The cgroup v2 path a process lives in, from /proc/<pid>/cgroup.
+
+    Reveals whether a session not started by tmuxctl is capped: a plain login
+    session reads ``…/session-NN.scope`` while a robust session reads
+    ``…/robust.slice/tmuxctl-<name>.scope``. Returns None if unreadable.
+    """
+    try:
+        text = Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        # cgroup v2 unified hierarchy line: "0::/user.slice/...".
+        if line.startswith("0::"):
+            return line[3:].strip() or None
+    return None
 
 
 def kill_session(session_name: str) -> None:

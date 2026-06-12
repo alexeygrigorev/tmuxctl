@@ -38,3 +38,17 @@ class SessionInfo:
     name: str
     created_at: int
     activity_at: int
+
+
+@dataclass(slots=True)
+class PaneInfo:
+    window_index: int
+    pane_index: int
+    pid: int
+    command: str
+    cwd: str
+    active: bool
+
+    @property
+    def label(self) -> str:
+        return f"{self.window_index}.{self.pane_index}"

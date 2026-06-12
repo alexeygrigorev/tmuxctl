@@ -363,6 +363,35 @@ def stop_scope(unit: str) -> None:
         pass
 
 
+def scope_properties(unit: str, props: list[str]) -> dict[str, str]:
+    """Read several systemd properties from a session's scope in one call.
+
+    Returns a ``{property: value}`` dict (empty when systemd is unavailable or
+    the unit cannot be shown). Useful for describing a running scope's cgroup,
+    memory, and CPU usage without one ``systemctl show`` per field.
+    """
+    if not systemd_available() or not props:
+        return {}
+    scope = unit if unit.endswith(".scope") else f"{unit}.scope"
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "show", scope, "-p", ",".join(props)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, FileNotFoundError):
+        return {}
+    if result.returncode != 0:
+        return {}
+    values: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            values[key.strip()] = value.strip()
+    return values
+
+
 def scope_property(unit: str, prop: str) -> str | None:
     """Read a single systemd property from a session's scope, or None."""
     if not systemd_available():

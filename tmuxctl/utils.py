@@ -55,3 +55,28 @@ def format_interval(seconds: int) -> str:
         if seconds % unit == 0:
             return f"{seconds // unit}{suffix}"
     return f"{seconds}s"
+
+
+def format_bytes(num_bytes: int) -> str:
+    """Human-readable byte count for display, e.g. ``1.6G`` / ``512M`` / ``0B``."""
+    value = float(num_bytes)
+    for unit in ("B", "K", "M", "G", "T"):
+        if value < 1024 or unit == "T":
+            if unit == "B":
+                return f"{int(value)}B"
+            return f"{value:.1f}{unit}"
+        value /= 1024
+    return f"{value:.1f}T"
+
+
+def format_cpu_time(nanoseconds: int) -> str:
+    """Format cumulative CPU time (nanoseconds) as ``2h03m04s`` / ``5m09s`` / ``0.4s``."""
+    total_seconds = nanoseconds / 1_000_000_000
+    if total_seconds < 60:
+        return f"{total_seconds:.1f}s"
+    total = int(total_seconds)
+    hours, rem = divmod(total, 3600)
+    minutes, seconds = divmod(rem, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{seconds:02d}s"
+    return f"{minutes}m{seconds:02d}s"

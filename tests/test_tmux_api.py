@@ -179,3 +179,46 @@ def test_kill_session_stops_scope(monkeypatch) -> None:
     tmux_api.kill_session("proj")
 
     assert stopped == ["tmuxctl-proj"]
+
+
+def test_session_panes_parses_list_panes(monkeypatch) -> None:
+    monkeypatch.setattr(tmux_api, "session_exists", lambda name: True)
+
+    stdout = "0\t0\t111\tnvim\t/home/a/proj\t1\n1\t0\t222\tpython\t/home/a/proj/sub\t0\n"
+
+    def fake_run_tmux(args, *, check=True, timeout=None):
+        assert args[0] == "list-panes"
+        assert "-s" in args
+        return subprocess.CompletedProcess(args, 0, stdout, "")
+
+    monkeypatch.setattr(tmux_api, "_run_tmux", fake_run_tmux)
+
+    panes = tmux_api.session_panes("proj")
+    assert [p.label for p in panes] == ["0.0", "1.0"]
+    assert panes[0].command == "nvim"
+    assert panes[0].cwd == "/home/a/proj"
+    assert panes[0].active is True
+    assert panes[1].pid == 222
+    assert panes[1].active is False
+
+
+def test_session_panes_requires_existing_session(monkeypatch) -> None:
+    monkeypatch.setattr(tmux_api, "session_exists", lambda name: False)
+    raised = False
+    try:
+        tmux_api.session_panes("ghost")
+    except tmux_api.TmuxSessionNotFoundError:
+        raised = True
+    assert raised
+
+
+def test_process_cgroup_reads_unified_line(monkeypatch, tmp_path) -> None:
+    cgroup_file = tmp_path / "cgroup"
+    cgroup_file.write_text(
+        "0::/user.slice/user-1000.slice/session-9.scope\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(tmux_api, "Path", lambda p: cgroup_file)
+    assert tmux_api.process_cgroup(1234) == "/user.slice/user-1000.slice/session-9.scope"
+
+    cgroup_file.write_text("", encoding="utf-8")
+    assert tmux_api.process_cgroup(1234) is None

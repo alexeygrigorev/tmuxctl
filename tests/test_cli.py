@@ -1082,3 +1082,79 @@ def test_doctor_runs(monkeypatch) -> None:
     assert "RAM" in result.output
     assert "main" in result.output
     assert "MemoryMax=5G" in result.output
+
+
+def _mk_pane(window=0, pane=0, pid=111, command="bash", cwd="/home/a", active=True):
+    from tmuxctl.models import PaneInfo
+
+    return PaneInfo(
+        window_index=window,
+        pane_index=pane,
+        pid=pid,
+        command=command,
+        cwd=cwd,
+        active=active,
+    )
+
+
+def test_describe_capped_session(monkeypatch) -> None:
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.session_exists", lambda name: True)
+    monkeypatch.setattr(
+        "tmuxctl.cli.tmux_api.session_panes",
+        lambda name: [_mk_pane(pid=111, command="nvim", cwd="/home/a/proj")],
+    )
+    monkeypatch.setattr("tmuxctl.cli.robust.systemd_available", lambda: True)
+    monkeypatch.setattr(
+        "tmuxctl.cli.robust.scope_properties",
+        lambda unit, props: {
+            "ActiveState": "active",
+            "ControlGroup": "/user.slice/robust.slice/tmuxctl-proj.scope",
+            "MemoryCurrent": str(3 * 1024**3),
+            "MemoryPeak": str(5 * 1024**3),
+            "MemoryMax": str(12 * 1024**3),
+            "MemorySwapCurrent": "0",
+            "CPUUsageNSec": str(133 * 1_000_000_000),
+            "TasksCurrent": "42",
+        },
+    )
+
+    result = runner.invoke(app, ["describe", "proj"])
+    assert result.exit_code == 0
+    assert "nvim" in result.output
+    assert "/home/a/proj" in result.output
+    assert "robust.slice/tmuxctl-proj.scope" in result.output
+    assert "3.0G / 12.0G" in result.output
+    assert "peak 5.0G" in result.output
+    assert "2m13s" in result.output
+    assert "Tasks:    42" in result.output
+
+
+def test_describe_uncapped_session_shows_real_cgroup(monkeypatch) -> None:
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.session_exists", lambda name: True)
+    monkeypatch.setattr(
+        "tmuxctl.cli.tmux_api.session_panes",
+        lambda name: [_mk_pane(pid=999, command="claude", cwd="/home/a")],
+    )
+    monkeypatch.setattr("tmuxctl.cli.robust.systemd_available", lambda: True)
+    monkeypatch.setattr(
+        "tmuxctl.cli.robust.scope_properties", lambda unit, props: {"ActiveState": "inactive"}
+    )
+    monkeypatch.setattr(
+        "tmuxctl.cli.tmux_api.process_cgroup",
+        lambda pid: "/user.slice/user@1000.service/session-7.scope",
+    )
+
+    result = runner.invoke(app, ["describe", "plain"])
+    assert result.exit_code == 0
+    assert "uncapped" in result.output
+    assert "session-7.scope" in result.output
+    assert "--mem 24G" in result.output
+
+
+def test_describe_missing_session(monkeypatch) -> None:
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.session_exists", lambda name: False)
+    result = runner.invoke(app, ["describe", "ghost"])
+    assert result.exit_code == 1
+    assert "was not found" in result.output
+
+

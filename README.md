@@ -265,6 +265,49 @@ t rename codex codex-main
 t rename 2 archived-worker
 ```
 
+## Inspect a Session
+
+`describe` shows what is actually running inside a session — the process in each
+pane, its working directory, the cgroup the session lives in, and (for sessions
+started by `t` with a memory cap) live RAM and CPU usage read straight from that
+cgroup. Target it by name, by the numeric ID from `t list`, or `:current`:
+
+```bash
+t describe codex            # by name
+t describe 2                # by the numeric ID from `t list`
+t describe :current         # the session you are in
+```
+
+For a capped session it reads memory and CPU from the session's
+`tmuxctl-<name>.scope` cgroup, so the numbers cover the whole process tree, not
+just the shell:
+
+```
+Session:  git-myproj  (1 window(s), 1 pane(s))
+
+WIN.PANE  PID      COMMAND          DIRECTORY
+0.0*      3564734  claude           /home/you/git/myproj
+
+Scope:    tmuxctl-git-myproj.scope  (active)
+Cgroup:   /user.slice/.../robust.slice/tmuxctl-git-myproj.scope
+Memory:   3.4G / 12.0G  (peak 5.2G, swap 0B)
+CPU time: 7m25s
+Tasks:    222
+```
+
+A session you did **not** start through `t` has no memory cap. `describe` says so
+and prints the real cgroup it found (e.g. a plain `session-NN.scope`), so you can
+tell at a glance which sessions are protected and which can still take the whole
+tmux server down under memory pressure:
+
+```
+Scope:    none — session is uncapped (not started by tmuxctl)
+Cgroup:   /user.slice/.../session-7.scope
+          No per-session RAM/CPU cap; the box-wide OOM-killer can
+          take the whole tmux server. Start a capped one with:
+          t :git-myproj --mem 24G
+```
+
 ## Shell Setup
 
 ### Bash completion
@@ -351,6 +394,46 @@ sudo loginctl enable-linger "$USER"
 ```
 
 Logs are available via `journalctl --user -u tmuxctl -f`.
+
+## Known Problems
+
+### An orphaned scope can block recreating a session of the same name
+
+Normally `t kill` tears a session's memory-capped scope down (`systemctl --user
+stop tmuxctl-<name>.scope`), so the unit name is free for next time. Two things
+have to go wrong together to defeat that:
+
+1. the tmux **server dies uncleanly** (a crash or machine-wide OOM), so the
+   normal kill path — and its scope teardown — never runs, **and**
+2. a **disowned background process** (e.g. an `Xvfb`, a dev server, anything
+   `nohup`/`&`-launched) is still running inside that session's scope.
+
+The dead session's shell is gone, but the stray process keeps the
+`tmuxctl-<name>.scope` cgroup alive. The next time you try to create a session
+with the **same derived name** (e.g. `t -` from the same folder), tmuxctl asks
+`systemd-run` for that unit name and it fails with *"Unit
+tmuxctl-<name>.scope was already loaded"*. The new tmux pane's command dies on
+launch, and instead of a clear error you usually see terminal escape codes
+(a Device-Attributes reply such as `^[[?61;...c`) leak onto your prompt as the
+aborted tmux client exits.
+
+**Diagnose** — look for a scope whose tmux session no longer exists:
+
+```bash
+systemctl --user list-units --type=scope --all 'tmuxctl-*'
+systemctl --user status tmuxctl-<name>.scope   # shows the stray process holding it open
+```
+
+**Fix** — stop the orphan scope (this also kills the stray process inside it),
+then create the session again:
+
+```bash
+systemctl --user stop tmuxctl-<name>.scope
+```
+
+This is rare (it needs an unclean crash *and* a backgrounded process), so it is
+documented rather than worked around. A future version may auto-recover by
+clearing a stale scope whose session is gone before creating a new one.
 
 ## Alternatives
 
