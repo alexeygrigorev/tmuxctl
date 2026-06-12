@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 import sys
 from enum import Enum
 from pathlib import Path
@@ -10,7 +12,7 @@ import typer
 from click.shell_completion import CompletionItem
 from typer.core import TyperGroup
 
-from tmuxctl import scheduler, storage, tmux_api
+from tmuxctl import robust, scheduler, storage, strays as strays_mod, tmux_api
 from tmuxctl.models import Job, LogEntry, SessionInfo
 from tmuxctl.utils import display_timestamp, display_unix_timestamp, format_interval, parse_interval
 
@@ -39,6 +41,9 @@ ROOT_COMMAND_NAMES = {
     "edit",
     "logs",
     "daemon",
+    "doctor",
+    "strays",
+    "reap",
 }
 
 PROGRAM_NAME = "tmuxctl"
@@ -479,6 +484,10 @@ def create_or_attach(
         bool,
         typer.Option("--resize-window", "-r", help="Run resize-window -A after attaching."),
     ] = False,
+    mem: Annotated[
+        str | None,
+        typer.Option("--mem", help="Memory cap for this session's scope, e.g. 24G."),
+    ] = None,
 ) -> None:
     """Create a tmux session if needed, then attach to it."""
     session_name = _resolve_session_name(session_name)
@@ -487,6 +496,7 @@ def create_or_attach(
             session_name,
             resize_window=resize_window,
             shell_command=command,
+            mem=mem,
         )
     except Exception as exc:
         _fail(str(exc))
@@ -800,6 +810,187 @@ def jobs_daemon(
         typer.echo(f"Processed {count} due job(s)")
         return
     scheduler.run_daemon(poll_interval=poll_interval)
+
+
+def _run_text(args: list[str]) -> str:
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, check=False)
+    except (OSError, FileNotFoundError):
+        return ""
+    return result.stdout
+
+
+def _format_idle(days: float) -> str:
+    if days >= 1:
+        return f"{days:.0f}d"
+    hours = days * 24
+    if hours >= 1:
+        return f"{hours:.0f}h"
+    return "<1h"
+
+
+@app.command()
+def doctor() -> None:
+    """Diagnose OOM risk: RAM, cgroup OOM kills, and robust session scopes."""
+    typer.echo("== RAM ==")
+    free_out = _run_text(["free", "-h"])
+    typer.echo(free_out.rstrip() if free_out else "(free unavailable)")
+
+    typer.echo("")
+    typer.echo("== cgroup OOM kills ==")
+    uid = os.getuid()
+    events_path = Path(
+        f"/sys/fs/cgroup/user.slice/user-{uid}.slice/"
+        f"user@{uid}.service/memory.events"
+    )
+    try:
+        events_text = events_path.read_text(encoding="utf-8")
+    except OSError:
+        events_text = ""
+    if events_text:
+        oom_kill = "?"
+        for line in events_text.splitlines():
+            if line.startswith("oom_kill "):
+                oom_kill = line.split()[1]
+        typer.echo(f"oom_kill = {oom_kill}  (source: {events_path})")
+        if oom_kill not in ("0", "?"):
+            typer.echo("  ^ non-zero: the OOM-killer has fired in your user slice")
+    else:
+        typer.echo(f"(no memory.events at {events_path})")
+
+    typer.echo("")
+    typer.echo("== robust session scopes ==")
+    if not robust.systemd_available():
+        typer.echo("systemd-run unavailable; sessions run uncapped (no scopes)")
+    else:
+        try:
+            live = tmux_api.list_sessions()
+        except Exception:
+            live = []
+        if not live:
+            typer.echo("(no live sessions)")
+        for name in live:
+            unit = robust.scope_unit_name(name)
+            mem = robust.scope_property(unit, "MemoryMax") or "-"
+            peak = robust.scope_property(unit, "MemoryPeak") or "-"
+            typer.echo(f"  {name:<24} MemoryMax={mem}  MemoryPeak={peak}")
+
+    typer.echo("")
+    typer.echo("== crash survivors (dead but registered sessions) ==")
+    report = strays_mod.scan_all()
+    dead_found = False
+    for scan in report.scans:
+        for session in scan.sessions:
+            if session.windows == 0:
+                dead_found = True
+                typer.echo(f"  {session.name} on {scan.socket} (0 windows)")
+    if report.orphan_pids:
+        dead_found = True
+        typer.echo(f"  orphaned tmux server pids: {report.orphan_pids}")
+    if not dead_found:
+        typer.echo("(none)")
+
+
+def _print_stray_report(report: strays_mod.StrayReport, *, stale: int | None) -> None:
+    typer.echo("SOCKET                          SESSION            ATTACHED IDLE   WIN")
+    any_row = False
+    for scan in report.scans:
+        if not scan.reachable:
+            continue
+        for session in scan.sessions:
+            idle = session.idle_days()
+            if stale is not None and idle < stale:
+                continue
+            any_row = True
+            attached = "yes" if session.attached else "no"
+            sock_label = scan.socket if len(scan.socket) <= 30 else "..." + scan.socket[-27:]
+            typer.echo(
+                f"{sock_label:<31} {session.name:<18} {attached:<8} "
+                f"{_format_idle(idle):<6} {session.windows}"
+            )
+    if not any_row:
+        typer.echo("(no matching sessions)")
+
+    if report.dead_sockets:
+        typer.echo("")
+        typer.echo("Dead socket files (removable):")
+        for sock in report.dead_sockets:
+            typer.echo(f"  {sock}")
+
+    if report.orphan_pids:
+        typer.echo("")
+        typer.echo("Orphaned tmux server pids (no reachable socket):")
+        for pid in report.orphan_pids:
+            typer.echo(f"  {pid}")
+
+
+@app.command()
+def strays(
+    stale: Annotated[
+        int | None,
+        typer.Option("--stale", min=0, help="Only show sessions idle >= N days."),
+    ] = None,
+) -> None:
+    """Scan ALL tmux sockets for stray sessions, dead sockets, orphan servers."""
+    report = strays_mod.scan_all()
+    _print_stray_report(report, stale=stale)
+
+
+@app.command()
+def reap(
+    stale: Annotated[
+        int,
+        typer.Option("--stale", min=0, help="Reap detached sessions idle >= N days."),
+    ] = 14,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", help="Actually kill/remove (otherwise dry-run)."),
+    ] = False,
+) -> None:
+    """Kill detached idle servers and remove dead socket files (guarded)."""
+    report = strays_mod.scan_all()
+
+    servers_to_kill: list[strays_mod.SocketScan] = []
+    for scan in report.scans:
+        if not scan.reachable:
+            continue
+        # GUARD: never touch a server with any attached session.
+        if scan.has_attached:
+            continue
+        if not scan.sessions:
+            continue
+        # Kill only when every session is idle >= stale days.
+        if all(session.idle_days() >= stale for session in scan.sessions):
+            servers_to_kill.append(scan)
+
+    if not servers_to_kill and not report.dead_sockets:
+        typer.echo("Nothing to reap.")
+        return
+
+    action = "Killing" if yes else "Would kill"
+    for scan in servers_to_kill:
+        names = ", ".join(s.name for s in scan.sessions)
+        typer.echo(f"{action} server {scan.socket} (sessions: {names})")
+        if yes:
+            subprocess.run(
+                ["tmux", "-S", scan.socket, "kill-server"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+    rm_action = "Removing" if yes else "Would remove"
+    for sock in report.dead_sockets:
+        typer.echo(f"{rm_action} dead socket file {sock}")
+        if yes:
+            try:
+                os.remove(sock)
+            except OSError as exc:
+                typer.echo(f"  (failed: {exc})")
+
+    if not yes:
+        typer.echo("")
+        typer.echo("Dry-run. Re-run with --yes to apply.")
 
 
 app.add_typer(jobs_app, name="jobs")

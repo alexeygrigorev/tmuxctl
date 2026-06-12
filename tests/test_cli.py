@@ -691,6 +691,7 @@ def test_create_or_attach_passes_create_command(monkeypatch) -> None:
         *,
         resize_window: bool = False,
         shell_command: list[str] | None = None,
+        mem: str | None = None,
     ) -> None:
         captured["session_name"] = session_name
         captured["resize_window"] = resize_window
@@ -714,6 +715,7 @@ def test_create_or_attach_normalizes_tmux_separators(monkeypatch) -> None:
         *,
         resize_window: bool = False,
         shell_command: list[str] | None = None,
+        mem: str | None = None,
     ) -> None:
         captured["session_name"] = session_name
         captured["resize_window"] = resize_window
@@ -951,3 +953,132 @@ def test_main_runs_app_without_command(monkeypatch) -> None:
     cli.main()
 
     assert captured["args"] == []
+
+
+# ---------------------------------------------------------------------------
+# doctor / strays / reap
+# ---------------------------------------------------------------------------
+def _socket_scan(monkeypatch, scans, dead=None, orphans=None):
+    from tmuxctl import strays as strays_mod
+
+    report = strays_mod.StrayReport(
+        scans=scans,
+        dead_sockets=dead or [],
+        orphan_pids=orphans or [],
+    )
+    monkeypatch.setattr("tmuxctl.cli.strays_mod.scan_all", lambda *a, **k: report)
+    return report
+
+
+def _mk_scan(socket, sessions, *, reachable=True, pid=1, is_default=False):
+    from tmuxctl import strays as strays_mod
+
+    return strays_mod.SocketScan(
+        socket=socket, reachable=reachable, is_default=is_default,
+        pid=pid, sessions=sessions,
+    )
+
+
+def _mk_session(name, *, attached=False, idle_days=0.0, windows=1):
+    from tmuxctl import strays as strays_mod
+    import time
+
+    activity = int(time.time() - idle_days * 86400)
+    return strays_mod.StraySession(
+        socket="s", name=name, activity_at=activity,
+        attached=attached, windows=windows,
+    )
+
+
+def test_strays_lists_sessions_and_dead_sockets(monkeypatch) -> None:
+    scan = _mk_scan(
+        "/tmp/tmux-1000/default",
+        [_mk_session("main", attached=True, idle_days=0), _mk_session("old", idle_days=20)],
+        is_default=True,
+    )
+    _socket_scan(monkeypatch, [scan], dead=["/tmp/tmux-1000/deadsock"], orphans=[999])
+
+    result = runner.invoke(app, ["strays"])
+    assert result.exit_code == 0
+    assert "main" in result.output
+    assert "old" in result.output
+    assert "/tmp/tmux-1000/deadsock" in result.output
+    assert "999" in result.output
+
+
+def test_strays_stale_filter(monkeypatch) -> None:
+    scan = _mk_scan(
+        "/tmp/tmux-1000/default",
+        [_mk_session("fresh", idle_days=1), _mk_session("ancient", idle_days=30)],
+    )
+    _socket_scan(monkeypatch, [scan])
+
+    result = runner.invoke(app, ["strays", "--stale", "14"])
+    assert result.exit_code == 0
+    assert "ancient" in result.output
+    assert "fresh" not in result.output
+
+
+def test_reap_dry_run_does_not_kill(monkeypatch) -> None:
+    killed: list[list[str]] = []
+    monkeypatch.setattr("tmuxctl.cli.subprocess.run", lambda args, **k: killed.append(args))
+
+    scan = _mk_scan(
+        "/tmp/tmux-1000/idlesock",
+        [_mk_session("idle", attached=False, idle_days=30)],
+    )
+    _socket_scan(monkeypatch, [scan])
+
+    result = runner.invoke(app, ["reap", "--stale", "14"])
+    assert result.exit_code == 0
+    assert "Would kill" in result.output
+    assert "Dry-run" in result.output
+    assert killed == []  # nothing actually killed
+
+
+def test_reap_guards_attached_server(monkeypatch) -> None:
+    killed: list[list[str]] = []
+    monkeypatch.setattr("tmuxctl.cli.subprocess.run", lambda args, **k: killed.append(args))
+
+    scan = _mk_scan(
+        "/tmp/tmux-1000/livesock",
+        [_mk_session("live", attached=True, idle_days=30)],
+    )
+    _socket_scan(monkeypatch, [scan])
+
+    result = runner.invoke(app, ["reap", "--stale", "14", "--yes"])
+    assert result.exit_code == 0
+    assert "Nothing to reap" in result.output
+    assert killed == []  # attached server is guarded
+
+
+def test_reap_yes_kills_and_removes(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr("tmuxctl.cli.subprocess.run", lambda args, **k: calls.append(args))
+    removed: list[str] = []
+    monkeypatch.setattr("tmuxctl.cli.os.remove", lambda p: removed.append(p))
+
+    scan = _mk_scan(
+        "/tmp/tmux-1000/idlesock",
+        [_mk_session("idle", attached=False, idle_days=30)],
+    )
+    _socket_scan(monkeypatch, [scan], dead=["/tmp/tmux-1000/deadsock"])
+
+    result = runner.invoke(app, ["reap", "--stale", "14", "--yes"])
+    assert result.exit_code == 0
+    assert ["tmux", "-S", "/tmp/tmux-1000/idlesock", "kill-server"] in calls
+    assert removed == ["/tmp/tmux-1000/deadsock"]
+
+
+def test_doctor_runs(monkeypatch) -> None:
+    _socket_scan(monkeypatch, [])
+    monkeypatch.setattr("tmuxctl.cli._run_text", lambda args: "free output here")
+    monkeypatch.setattr("tmuxctl.cli.robust.systemd_available", lambda: True)
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.list_sessions", lambda: ["main"])
+    monkeypatch.setattr("tmuxctl.cli.robust.scope_property", lambda unit, prop: "5G" if prop == "MemoryMax" else "1G")
+
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0
+    assert "RAM" in result.output
+    assert "main" in result.output
+    assert "MemoryMax=5G" in result.output

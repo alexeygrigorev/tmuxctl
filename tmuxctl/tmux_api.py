@@ -4,8 +4,11 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import time
+from pathlib import Path
 
+from tmuxctl import robust
 from tmuxctl.models import SessionInfo
 
 
@@ -125,17 +128,43 @@ def attach_session(session_name: str, *, resize_window: bool = False) -> None:
         raise TmuxCommandError(stderr or f"failed to attach to '{session_name}'")
 
 
+def _login_shell() -> list[str]:
+    """The interactive login shell to run as the session's top process."""
+    shell = os.environ.get("SHELL") or "/bin/sh"
+    return [shell, "-l"]
+
+
 def create_or_attach_session(
     session_name: str,
     *,
     resize_window: bool = False,
     shell_command: list[str] | None = None,
+    mem: str | None = None,
 ) -> None:
     if session_exists(session_name):
         attach_session(session_name, resize_window=resize_window)
         return
 
-    command = ["new-session", "-d", "-s", session_name]
+    cwd = os.getcwd()
+    unit = robust.scope_unit_name(session_name)
+    mem = _resolve_session_mem(cwd, flag=mem)
+
+    if mem is not None and robust.systemd_available():
+        # Ensure the parent slice exists before any capped session joins it.
+        try:
+            robust.ensure_slice(robust.resolve_slice_max())
+        except Exception:  # noqa: BLE001 - slice bound is best-effort
+            pass
+        wrapped = robust.scope_wrap(_login_shell(), unit, mem)
+        command = ["new-session", "-d", "-s", session_name, "-c", cwd, *wrapped]
+    else:
+        if mem is not None:
+            print(
+                "tmuxctl: systemd-run unavailable; session runs without a memory cap",
+                file=sys.stderr,
+            )
+        command = ["new-session", "-d", "-s", session_name, "-c", cwd]
+
     result = _run_tmux(command, check=False)
     if result.returncode != 0:
         stderr = (result.stderr or "").strip()
@@ -147,6 +176,14 @@ def create_or_attach_session(
     attach_session(session_name, resize_window=resize_window)
 
 
+def _resolve_session_mem(cwd: str, *, flag: str | None = None) -> str | None:
+    """Resolve the per-session MemoryMax ceiling for a new session."""
+    try:
+        return robust.resolve_mem(flag=flag, cwd=Path(cwd))
+    except Exception:  # noqa: BLE001 - never block session creation on config
+        return robust.DEFAULT_MEM
+
+
 def kill_session(session_name: str) -> None:
     if not session_exists(session_name):
         raise TmuxSessionNotFoundError(f"tmux session '{session_name}' was not found")
@@ -155,6 +192,9 @@ def kill_session(session_name: str) -> None:
     if result.returncode != 0:
         stderr = (result.stderr or "").strip()
         raise TmuxCommandError(stderr or f"failed to kill '{session_name}'")
+
+    # Tear down the session's memory-capped scope so the cgroup is reaped.
+    robust.stop_scope(robust.scope_unit_name(session_name))
 
 
 def rename_session(session_name: str, new_name: str) -> None:
