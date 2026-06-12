@@ -3,7 +3,7 @@ revision = 3
 requires-python = ">=3.10"
 
 [options]
-exclude-newer = "2026-06-05T14:25:29.152917717Z"
+exclude-newer = "2026-06-05T17:20:59.617577608Z"
 exclude-newer-span = "P7D"
 
 [[package]]
@@ -687,6 +687,7 @@ version = "0.1.8"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "typer" },
 ]
 
@@ -699,6 +700,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8,<9" },
+    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2,<3" },
     { name = "typer", specifier = ">=0.12,<1" },
 ]
 

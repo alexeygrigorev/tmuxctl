@@ -19,8 +19,12 @@ import re
 import shutil
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # Python 3.10: tomllib is not in the stdlib
+    import tomli as tomllib
 
 # Built-in defaults (config precedence step 5).
 DEFAULT_MEM = "12G"
