@@ -989,6 +989,10 @@ _SCOPE_PROPS = [
 ]
 
 
+_CGROUP_ROOT = Path("/sys/fs/cgroup")
+_TOP_MEMORY_ROWS = 5
+
+
 def _scope_bytes(values: dict[str, str], key: str) -> int | None:
     """Parse a numeric systemd byte/count property, treating unset as None."""
     raw = values.get(key, "")
@@ -998,6 +1002,106 @@ def _scope_bytes(values: dict[str, str], key: str) -> int | None:
         return int(raw)
     except ValueError:
         return None
+
+
+def _cgroup_proc_pids(cgroup: str) -> list[int]:
+    """Read live PIDs from a cgroup v2 path as reported by systemd."""
+    if not cgroup.startswith("/"):
+        return []
+    path = _CGROUP_ROOT / cgroup.lstrip("/") / "cgroup.procs"
+    try:
+        return [int(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    except (OSError, ValueError):
+        return []
+
+
+def _proc_comm(pid: int) -> str | None:
+    try:
+        return Path(f"/proc/{pid}/comm").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+
+def _proc_cmdline(pid: int) -> str:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return ""
+    return raw.replace(b"\0", b" ").decode("utf-8", errors="replace").strip()
+
+
+def _proc_rss_kb(pid: int) -> int | None:
+    try:
+        for line in Path(f"/proc/{pid}/status").read_text(encoding="utf-8").splitlines():
+            if line.startswith("VmRSS:"):
+                parts = line.split()
+                return int(parts[1])
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def _proc_pgid(pid: int) -> int | None:
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        fields_after_comm = stat.rsplit(") ", 1)[1].split()
+        return int(fields_after_comm[2])
+    except (IndexError, ValueError):
+        return None
+
+
+def _shorten(value: str, width: int) -> str:
+    if len(value) <= width:
+        return value
+    return value[: max(0, width - 3)] + "..."
+
+
+def _describe_memory_breakdown_lines(cgroup: str) -> list[str]:
+    """Summarize RSS inside a cgroup by executable name and process group."""
+    by_command: dict[str, tuple[int, int]] = {}
+    by_pgid: dict[int, tuple[int, int, str]] = {}
+
+    for pid in _cgroup_proc_pids(cgroup):
+        rss_kb = _proc_rss_kb(pid)
+        comm = _proc_comm(pid)
+        if rss_kb is None or comm is None:
+            continue
+
+        total, count = by_command.get(comm, (0, 0))
+        by_command[comm] = (total + rss_kb, count + 1)
+
+        pgid = _proc_pgid(pid)
+        if pgid is None:
+            continue
+        args = _proc_cmdline(pid) or comm
+        pg_total, pg_count, sample = by_pgid.get(pgid, (0, 0, args))
+        by_pgid[pgid] = (pg_total + rss_kb, pg_count + 1, sample)
+
+    if not by_command and not by_pgid:
+        return []
+
+    lines = ["Memory by command (RSS):"]
+    for comm, (rss_kb, count) in sorted(
+        by_command.items(), key=lambda item: item[1][0], reverse=True
+    )[:_TOP_MEMORY_ROWS]:
+        lines.append(
+            f"  {comm:<18} {format_bytes(rss_kb * 1024):>7}  {count:>4} process(es)"
+        )
+
+    if by_pgid:
+        lines.append("Memory by process group (RSS):")
+        for pgid, (rss_kb, count, sample) in sorted(
+            by_pgid.items(), key=lambda item: item[1][0], reverse=True
+        )[:_TOP_MEMORY_ROWS]:
+            lines.append(
+                f"  {format_bytes(rss_kb * 1024):>7}  {count:>4} process(es)  "
+                f"PGID={pgid:<8} {_shorten(sample, 72)}"
+            )
+
+    return lines
 
 
 def _uncapped_scope_lines(session_name: str, panes: list) -> list[str]:
@@ -1052,6 +1156,8 @@ def _describe_scope_lines(session_name: str, panes: list) -> list[str]:
     cap_str = format_bytes(cap) if cap is not None else "unlimited"
     extra_str = f"  ({', '.join(extras)})" if extras else ""
     lines.append(f"Memory:   {mem} / {cap_str}{extra_str}")
+    if cgroup:
+        lines.extend(_describe_memory_breakdown_lines(cgroup))
 
     cpu = _scope_bytes(values, "CPUUsageNSec")
     if cpu is not None:

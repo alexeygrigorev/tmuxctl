@@ -1179,6 +1179,15 @@ def test_describe_capped_session(monkeypatch) -> None:
             "TasksCurrent": "42",
         },
     )
+    monkeypatch.setattr(
+        "tmuxctl.cli._describe_memory_breakdown_lines",
+        lambda cgroup: [
+            "Memory by command (RSS):",
+            "  python3              1.5G     6 process(es)",
+            "Memory by process group (RSS):",
+            "     1.2G     4 process(es)  PGID=1234     uv run make test",
+        ],
+    )
 
     result = runner.invoke(app, ["describe", "proj"])
     assert result.exit_code == 0
@@ -1188,6 +1197,9 @@ def test_describe_capped_session(monkeypatch) -> None:
     assert "3.0G / 12.0G" in result.output
     assert "peak 5.0G" in result.output
     assert "swap 0B / 8.0G" in result.output
+    assert "Memory by command (RSS):" in result.output
+    assert "python3" in result.output
+    assert "PGID=1234" in result.output
     assert "2m13s" in result.output
     assert "Tasks:    42" in result.output
 
