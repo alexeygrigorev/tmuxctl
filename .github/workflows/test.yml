@@ -19,6 +19,30 @@ jobs:
       - run: uv sync --dev
       - run: uv run pytest
 
+  # Real systemd --user cgroup OOM isolation. Kept out of the default `test`
+  # job because it spawns a process that allocates until it is OOM-killed;
+  # runs here only, and self-skips if user scopes are unavailable.
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync --dev
+      - name: Enable the per-user systemd manager (needed for --user scopes)
+        run: |
+          sudo loginctl enable-linger "$(id -un)"
+          for _ in $(seq 1 10); do
+            [ -d "/run/user/$(id -u)" ] && break
+            sleep 1
+          done
+      - name: Run integration suite
+        run: |
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          make test-integration
+
   package-smoke:
     runs-on: ubuntu-latest
     steps:

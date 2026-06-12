@@ -7,8 +7,13 @@ ITS OWN cgroup and nothing else is touched.
 
 It exercises the real ``robust.scope_wrap`` argv against a real
 ``systemd-run --user --scope`` + cgroup v2, so it only runs where user scopes
-work. On a CI runner with no user systemd bus it is skipped (not failed) --
-that is the correct behaviour; the assertion requires a live cgroup.
+work. Where there is no user systemd bus it is skipped (not failed) -- that is
+the correct behaviour; the assertion requires a live cgroup.
+
+This test SPAWNS A PROCESS THAT ALLOCATES MEMORY UNTIL IT IS OOM-KILLED, so it
+lives in ``tests_integration/`` (outside the default ``testpaths``) and never
+runs during ``make test`` / a plain ``pytest``. It runs on CI only, via
+``make test-integration`` (the ``integration`` job in .github/workflows/test.yml).
 """
 
 from __future__ import annotations
