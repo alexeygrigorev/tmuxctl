@@ -1,6 +1,6 @@
 [project]
 name = "tmuxctl"
-version = "0.1.9"
+version = "0.2.0"
 description = "Small tmux session controller with recurring sends"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -39,6 +39,11 @@ dev = [
   "hatch>=1,<2",
   "pytest>=8,<9",
 ]
+
+[tool.tmuxctl]
+# Per-session MemoryMax cap for tmux sessions created in this repo (cgroup v2).
+# Same setting as a ``.robust-tmux`` file; the dedicated file wins if both exist.
+mem = "12G"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

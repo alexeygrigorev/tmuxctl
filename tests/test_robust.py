@@ -140,6 +140,34 @@ def test_resolve_mem_reads_git_root_project_file(monkeypatch, tmp_path) -> None:
     assert result == "42G"
 
 
+def test_resolve_mem_reads_pyproject_tool_section(monkeypatch, tmp_path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.tmuxctl]\nmem = \"36G\"\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(robust, "_git_root", lambda start: None)
+    result = robust.resolve_mem(flag=None, env={}, cwd=tmp_path, user_config={})
+    assert result == "36G"
+
+
+def test_resolve_mem_dedicated_file_beats_pyproject(monkeypatch, tmp_path) -> None:
+    (tmp_path / ".robust-tmux").write_text("mem = 30G\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.tmuxctl]\nmem = \"36G\"\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(robust, "_git_root", lambda start: None)
+    result = robust.resolve_mem(flag=None, env={}, cwd=tmp_path, user_config={})
+    assert result == "30G"
+
+
+def test_resolve_mem_pyproject_without_tool_section(monkeypatch, tmp_path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = \"x\"\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(robust, "_git_root", lambda start: None)
+    result = robust.resolve_mem(flag=None, env={}, cwd=tmp_path, user_config={})
+    assert result == robust.DEFAULT_MEM
+
+
 # ---------------------------------------------------------------------------
 # resolve_slice_max
 # ---------------------------------------------------------------------------
@@ -194,7 +222,7 @@ def test_total_ram_bytes_missing_file() -> None:
 # read_user_config
 # ---------------------------------------------------------------------------
 def test_read_user_config(tmp_path) -> None:
-    cfg = tmp_path / "robust.toml"
+    cfg = tmp_path / "cgroups.toml"
     cfg.write_text(
         'default_mem = "10G"\nslice_max = "48G"\nreserve = "6G"\n',
         encoding="utf-8",

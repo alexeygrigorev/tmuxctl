@@ -3,7 +3,7 @@ revision = 3
 requires-python = ">=3.10"
 
 [options]
-exclude-newer = "2026-06-05T17:20:59.617577608Z"
+exclude-newer = "2026-06-05T17:56:15.046963862Z"
 exclude-newer-span = "P7D"
 
 [[package]]
@@ -683,7 +683,7 @@ wheels = [
 
 [[package]]
 name = "tmuxctl"
-version = "0.1.8"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },

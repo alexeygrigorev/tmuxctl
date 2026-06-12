@@ -32,6 +32,7 @@ DEFAULT_RESERVE = "8G"
 
 _SLICE_NAME = "robust.slice"
 _PROJECT_FILE_NAME = ".robust-tmux"
+_PYPROJECT_FILE_NAME = "pyproject.toml"
 
 _SIZE_UNITS = {
     "B": 1,
@@ -118,12 +119,12 @@ def total_ram_bytes(meminfo_path: str = "/proc/meminfo") -> int:
 def _user_config_path() -> Path:
     base = os.environ.get("XDG_CONFIG_HOME")
     if base:
-        return Path(base) / "tmuxctl" / "robust.toml"
-    return Path.home() / ".config" / "tmuxctl" / "robust.toml"
+        return Path(base) / "tmuxctl" / "cgroups.toml"
+    return Path.home() / ".config" / "tmuxctl" / "cgroups.toml"
 
 
 def read_user_config(path: Path | None = None) -> dict[str, str]:
-    """Read ``~/.config/tmuxctl/robust.toml`` keys default_mem/slice_max/reserve."""
+    """Read ``~/.config/tmuxctl/cgroups.toml`` keys default_mem/slice_max/reserve."""
     cfg_path = path or _user_config_path()
     try:
         with open(cfg_path, "rb") as fh:
@@ -154,24 +155,38 @@ def _git_root(start: Path) -> Path | None:
 
 
 def read_project_mem(cwd: Path | None = None) -> str | None:
-    """Read ``mem`` from a ``.robust-tmux`` file in cwd or its git root.
+    """Read the per-project session mem cap from cwd or its git root.
 
-    The file may contain ``mem = "24G"`` (TOML-ish) or a bare size line
-    like ``24G``. First match wins (cwd before git root).
+    Two sources are checked, per directory: a dedicated ``.robust-tmux``
+    file, then a ``[tool.tmuxctl] mem`` key in ``pyproject.toml``. The
+    dedicated file wins when both are present. First directory match wins
+    (cwd before git root).
     """
     base = (cwd or Path.cwd()).resolve()
-    candidates: list[Path] = [base / _PROJECT_FILE_NAME]
+    dirs: list[Path] = [base]
     root = _git_root(base)
-    if root is not None:
-        candidate = root / _PROJECT_FILE_NAME
-        if candidate not in candidates:
-            candidates.append(candidate)
+    if root is not None and root != base:
+        dirs.append(root)
 
-    for candidate in candidates:
-        value = _parse_project_file(candidate)
+    for directory in dirs:
+        value = _parse_project_file(directory / _PROJECT_FILE_NAME)
+        if value is not None:
+            return value
+        value = _parse_pyproject_mem(directory / _PYPROJECT_FILE_NAME)
         if value is not None:
             return value
     return None
+
+
+def _parse_pyproject_mem(path: Path) -> str | None:
+    """Read ``[tool.tmuxctl] mem`` from a ``pyproject.toml`` file."""
+    try:
+        with open(path, "rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    value = data.get("tool", {}).get("tmuxctl", {}).get("mem")
+    return str(value) if value is not None else None
 
 
 def _parse_project_file(path: Path) -> str | None:
@@ -208,7 +223,8 @@ def resolve_mem(
     Precedence:
       1. explicit ``--mem`` flag
       2. env var ``ROBUST_TMUX_MEM``
-      3. per-project ``.robust-tmux`` (cwd or git root)
+      3. per-project ``.robust-tmux`` or ``pyproject.toml`` ``[tool.tmuxctl]``
+         (cwd or git root)
       4. user config ``default_mem``
       5. built-in default ``DEFAULT_MEM`` (12G)
     """
