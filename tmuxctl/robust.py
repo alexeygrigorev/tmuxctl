@@ -31,8 +31,8 @@ DEFAULT_MEM = "12G"
 DEFAULT_RESERVE = "8G"
 
 _SLICE_NAME = "robust.slice"
-_PROJECT_FILE_NAME = ".robust-tmux"
 _PYPROJECT_FILE_NAME = "pyproject.toml"
+_PROJECT_CONFIG_NAME = "cgroups.toml"
 
 _SIZE_UNITS = {
     "B": 1,
@@ -157,10 +157,11 @@ def _git_root(start: Path) -> Path | None:
 def read_project_mem(cwd: Path | None = None) -> str | None:
     """Read the per-project session mem cap from cwd or its git root.
 
-    Two sources are checked, per directory: a dedicated ``.robust-tmux``
-    file, then a ``[tool.tmuxctl] mem`` key in ``pyproject.toml``. The
-    dedicated file wins when both are present. First directory match wins
-    (cwd before git root).
+    Two sources are checked, per directory: a dedicated ``cgroups.toml``
+    (top-level ``mem`` key, for non-Python projects), then a
+    ``[tool.tmuxctl] mem`` key in ``pyproject.toml``. The dedicated file
+    wins when both are present. First directory match wins (cwd before git
+    root).
     """
     base = (cwd or Path.cwd()).resolve()
     dirs: list[Path] = [base]
@@ -169,13 +170,24 @@ def read_project_mem(cwd: Path | None = None) -> str | None:
         dirs.append(root)
 
     for directory in dirs:
-        value = _parse_project_file(directory / _PROJECT_FILE_NAME)
+        value = _parse_project_cgroups(directory / _PROJECT_CONFIG_NAME)
         if value is not None:
             return value
         value = _parse_pyproject_mem(directory / _PYPROJECT_FILE_NAME)
         if value is not None:
             return value
     return None
+
+
+def _parse_project_cgroups(path: Path) -> str | None:
+    """Read the top-level ``mem`` key from a project ``cgroups.toml`` file."""
+    try:
+        with open(path, "rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    value = data.get("mem")
+    return str(value) if value is not None else None
 
 
 def _parse_pyproject_mem(path: Path) -> str | None:
@@ -187,25 +199,6 @@ def _parse_pyproject_mem(path: Path) -> str | None:
         return None
     value = data.get("tool", {}).get("tmuxctl", {}).get("mem")
     return str(value) if value is not None else None
-
-
-def _parse_project_file(path: Path) -> str | None:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        # "mem = 24G" / 'mem = "24G"'
-        match = re.match(r"^mem\s*=\s*(.+)$", line, re.IGNORECASE)
-        if match:
-            return match.group(1).strip().strip("'\"")
-        # bare size line
-        if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?\s*[A-Za-z]*", line):
-            return line
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +216,7 @@ def resolve_mem(
     Precedence:
       1. explicit ``--mem`` flag
       2. env var ``ROBUST_TMUX_MEM``
-      3. per-project ``.robust-tmux`` or ``pyproject.toml`` ``[tool.tmuxctl]``
+      3. per-project ``cgroups.toml`` or ``pyproject.toml`` ``[tool.tmuxctl]``
          (cwd or git root)
       4. user config ``default_mem``
       5. built-in default ``DEFAULT_MEM`` (12G)

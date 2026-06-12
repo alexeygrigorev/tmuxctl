@@ -42,7 +42,8 @@ dev = [
 
 [tool.tmuxctl]
 # Per-session MemoryMax cap for tmux sessions created in this repo (cgroup v2).
-# Same setting as a ``.robust-tmux`` file; the dedicated file wins if both exist.
+# Non-Python repos can use a dedicated cgroups.toml with a top-level `mem` key
+# instead; it wins over this section when both are present.
 mem = "12G"
 
 [tool.pytest.ini_options]
