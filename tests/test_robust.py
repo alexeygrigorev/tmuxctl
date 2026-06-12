@@ -54,7 +54,7 @@ def test_scope_wrap_builds_expected_argv() -> None:
         "-p",
         "MemoryMax=7G",
         "-p",
-        "MemorySwapMax=0",
+        "MemorySwapMax=8G",
         "-p",
         "Slice=robust.slice",
         "--quiet",
@@ -62,6 +62,16 @@ def test_scope_wrap_builds_expected_argv() -> None:
         "/bin/bash",
         "-l",
     ]
+
+
+def test_scope_wrap_accepts_explicit_swap() -> None:
+    argv = robust.scope_wrap(["true"], "tmuxctl-proj", "7G", swap="2G")
+    assert "MemorySwapMax=2G" in argv
+
+
+def test_scope_wrap_allows_zero_swap() -> None:
+    argv = robust.scope_wrap(["true"], "tmuxctl-proj", "7G", swap="0")
+    assert "MemorySwapMax=0" in argv
 
 
 def test_scope_unit_name() -> None:
@@ -177,6 +187,58 @@ def test_resolve_mem_pyproject_without_tool_section(monkeypatch, tmp_path) -> No
 
 
 # ---------------------------------------------------------------------------
+# resolve_swap precedence
+# ---------------------------------------------------------------------------
+def test_resolve_swap_env_beats_project_and_config(monkeypatch, tmp_path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.tmuxctl]\nswap = "3G"\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(robust, "read_user_config", lambda *a, **k: {"default_swap": "4G"})
+    result = robust.resolve_swap(
+        env={"ROBUST_TMUX_SWAP": "2G"},
+        cwd=tmp_path,
+    )
+    assert result == "2G"
+
+
+def test_resolve_swap_reads_project_cgroups_toml(monkeypatch, tmp_path) -> None:
+    (tmp_path / "cgroups.toml").write_text('swap = "3G"\n', encoding="utf-8")
+    monkeypatch.setattr(robust, "_git_root", lambda start: None)
+    result = robust.resolve_swap(env={}, cwd=tmp_path, user_config={})
+    assert result == "3G"
+
+
+def test_resolve_swap_reads_pyproject_tool_section(monkeypatch, tmp_path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.tmuxctl]\nswap = "5G"\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(robust, "_git_root", lambda start: None)
+    result = robust.resolve_swap(env={}, cwd=tmp_path, user_config={})
+    assert result == "5G"
+
+
+def test_resolve_swap_config_beats_default(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(robust, "_git_root", lambda start: None)
+    result = robust.resolve_swap(
+        env={},
+        cwd=tmp_path,
+        user_config={"default_swap": "4G"},
+    )
+    assert result == "4G"
+
+
+def test_resolve_swap_falls_back_to_builtin_default(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(robust, "_git_root", lambda start: None)
+    result = robust.resolve_swap(env={}, cwd=tmp_path, user_config={})
+    assert result == robust.DEFAULT_SWAP == "8G"
+
+
+def test_resolve_swap_allows_zero_override(tmp_path) -> None:
+    result = robust.resolve_swap(flag="0", env={}, cwd=tmp_path, user_config={})
+    assert result == "0"
+
+
+# ---------------------------------------------------------------------------
 # resolve_slice_max
 # ---------------------------------------------------------------------------
 def test_resolve_slice_max_explicit_config() -> None:
@@ -211,6 +273,16 @@ def test_resolve_slice_max_tiny_box_floor(tmp_path) -> None:
     assert robust.parse_size(result) == robust.parse_size(robust.DEFAULT_MEM)
 
 
+def test_resolve_slice_swap_max_explicit_config() -> None:
+    result = robust.resolve_slice_swap_max(user_config={"slice_swap_max": "12G"})
+    assert result == "12G"
+
+
+def test_resolve_slice_swap_max_default() -> None:
+    result = robust.resolve_slice_swap_max(user_config={})
+    assert result == robust.DEFAULT_SWAP
+
+
 # ---------------------------------------------------------------------------
 # total_ram_bytes
 # ---------------------------------------------------------------------------
@@ -232,11 +304,23 @@ def test_total_ram_bytes_missing_file() -> None:
 def test_read_user_config(tmp_path) -> None:
     cfg = tmp_path / "cgroups.toml"
     cfg.write_text(
-        'default_mem = "10G"\nslice_max = "48G"\nreserve = "6G"\n',
+        (
+            'default_mem = "10G"\n'
+            'default_swap = "4G"\n'
+            'slice_max = "48G"\n'
+            'slice_swap_max = "12G"\n'
+            'reserve = "6G"\n'
+        ),
         encoding="utf-8",
     )
     result = robust.read_user_config(cfg)
-    assert result == {"default_mem": "10G", "slice_max": "48G", "reserve": "6G"}
+    assert result == {
+        "default_mem": "10G",
+        "default_swap": "4G",
+        "slice_max": "48G",
+        "slice_swap_max": "12G",
+        "reserve": "6G",
+    }
 
 
 def test_read_user_config_missing(tmp_path) -> None:
@@ -259,13 +343,13 @@ def test_ensure_slice_writes_unit_and_reloads(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(robust.subprocess, "run", fake_run)
 
     unit_path = tmp_path / "robust.slice"
-    changed = robust.ensure_slice("40G", unit_path=unit_path)
+    changed = robust.ensure_slice("40G", swap_max="12G", unit_path=unit_path)
 
     assert changed is True
     content = unit_path.read_text(encoding="utf-8")
     assert "[Slice]" in content
     assert "MemoryMax=40G" in content
-    assert "MemorySwapMax=0" in content
+    assert "MemorySwapMax=12G" in content
     assert ["systemctl", "--user", "daemon-reload"] in reloads
 
 
@@ -278,9 +362,9 @@ def test_ensure_slice_noop_when_unchanged(monkeypatch, tmp_path) -> None:
     )
     unit_path = tmp_path / "robust.slice"
     unit_path.write_text(
-        "[Slice]\nMemoryMax=40G\nMemorySwapMax=0\n", encoding="utf-8"
+        "[Slice]\nMemoryMax=40G\nMemorySwapMax=12G\n", encoding="utf-8"
     )
-    changed = robust.ensure_slice("40G", unit_path=unit_path)
+    changed = robust.ensure_slice("40G", swap_max="12G", unit_path=unit_path)
     assert changed is False
     assert runs == []  # no daemon-reload on no-op
 

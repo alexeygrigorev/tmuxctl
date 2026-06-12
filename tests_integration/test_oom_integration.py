@@ -32,7 +32,12 @@ def _user_scopes_work() -> bool:
         return False
     try:
         probe = subprocess.run(
-            robust.scope_wrap(["true"], f"tmuxctl-oomprobe-{os.getpid()}", "64M"),
+            robust.scope_wrap(
+                ["true"],
+                f"tmuxctl-oomprobe-{os.getpid()}",
+                "64M",
+                swap="0",
+            ),
             capture_output=True,
             timeout=15,
         )
@@ -61,6 +66,7 @@ def test_capped_runaway_is_oom_killed_in_isolation() -> None:
             [sys.executable, "-c", hog],
             f"tmuxctl-oomvictim-{os.getpid()}",
             "128M",
+            swap="0",
         ),
         capture_output=True,
         timeout=60,

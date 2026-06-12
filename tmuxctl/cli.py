@@ -36,6 +36,7 @@ ROOT_COMMAND_NAMES = {
     "create-detached",
     "kill",
     "k",
+    "limit",
     "rename",
     "attach-last",
     "attach-recent",
@@ -573,6 +574,37 @@ def kill_alias(
 
 
 @app.command()
+def limit(
+    target: Annotated[str, typer.Argument(autocompletion=_complete_session_names)],
+    mem: Annotated[
+        str | None,
+        typer.Option("--mem", help="New live MemoryMax for this session's scope, e.g. 30G."),
+    ] = None,
+    swap: Annotated[
+        str | None,
+        typer.Option("--swap", help="New live MemorySwapMax for this session's scope, e.g. 8G."),
+    ] = None,
+    by: Annotated[
+        SessionOrder,
+        typer.Option("--by", help="Interpret numeric IDs using session creation time or last activity."),
+    ] = SessionOrder.created,
+) -> None:
+    """Change memory/swap limits for an already-running tmuxctl session."""
+    session_name = _resolve_session_target(target, by)
+    try:
+        tmux_api.set_session_limits(session_name, mem=mem, swap=swap)
+    except Exception as exc:
+        _fail(str(exc))
+
+    parts = []
+    if mem is not None:
+        parts.append(f"MemoryMax={mem}")
+    if swap is not None:
+        parts.append(f"MemorySwapMax={swap}")
+    typer.echo(f"Updated {session_name}: {' '.join(parts)}")
+
+
+@app.command()
 def rename(
     target: Annotated[str, typer.Argument(autocompletion=_complete_session_names)],
     new_name: str,
@@ -910,9 +942,13 @@ def doctor() -> None:
             typer.echo("(no live sessions)")
         for name in live:
             unit = robust.scope_unit_name(name)
-            mem = robust.scope_property(unit, "MemoryMax") or "-"
-            peak = robust.scope_property(unit, "MemoryPeak") or "-"
-            typer.echo(f"  {name:<24} MemoryMax={mem}  MemoryPeak={peak}")
+            props = robust.scope_properties(unit, ["MemoryMax", "MemorySwapMax", "MemoryPeak"])
+            mem = props.get("MemoryMax") or "-"
+            swap = props.get("MemorySwapMax") or "-"
+            peak = props.get("MemoryPeak") or "-"
+            typer.echo(
+                f"  {name:<24} MemoryMax={mem}  MemorySwapMax={swap}  MemoryPeak={peak}"
+            )
 
     typer.echo("")
     typer.echo("== crash survivors (dead but registered sessions) ==")

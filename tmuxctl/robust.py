@@ -29,6 +29,7 @@ else:  # Python 3.10: tomllib is not in the stdlib
 # Built-in defaults (config precedence step 5).
 DEFAULT_MEM = "12G"
 DEFAULT_RESERVE = "8G"
+DEFAULT_SWAP = "8G"
 
 _SLICE_NAME = "robust.slice"
 _PYPROJECT_FILE_NAME = "pyproject.toml"
@@ -124,7 +125,7 @@ def _user_config_path() -> Path:
 
 
 def read_user_config(path: Path | None = None) -> dict[str, str]:
-    """Read ``~/.config/tmuxctl/cgroups.toml`` keys default_mem/slice_max/reserve."""
+    """Read ``~/.config/tmuxctl/cgroups.toml`` cgroup policy keys."""
     cfg_path = path or _user_config_path()
     try:
         with open(cfg_path, "rb") as fh:
@@ -132,7 +133,7 @@ def read_user_config(path: Path | None = None) -> dict[str, str]:
     except (OSError, tomllib.TOMLDecodeError):
         return {}
     result: dict[str, str] = {}
-    for key in ("default_mem", "slice_max", "reserve"):
+    for key in ("default_mem", "default_swap", "slice_max", "slice_swap_max", "reserve"):
         if key in data and data[key] is not None:
             result[key] = str(data[key])
     return result
@@ -154,12 +155,12 @@ def _git_root(start: Path) -> Path | None:
     return Path(top) if top else None
 
 
-def read_project_mem(cwd: Path | None = None) -> str | None:
-    """Read the per-project session mem cap from cwd or its git root.
+def read_project_value(key: str, cwd: Path | None = None) -> str | None:
+    """Read a per-project tmuxctl cgroup value from cwd or its git root.
 
     Two sources are checked, per directory: a dedicated ``cgroups.toml``
-    (top-level ``mem`` key, for non-Python projects), then a
-    ``[tool.tmuxctl] mem`` key in ``pyproject.toml``. The dedicated file
+    (top-level key, for non-Python projects), then a ``[tool.tmuxctl]`` key
+    in ``pyproject.toml``. The dedicated file
     wins when both are present. First directory match wins (cwd before git
     root).
     """
@@ -170,34 +171,39 @@ def read_project_mem(cwd: Path | None = None) -> str | None:
         dirs.append(root)
 
     for directory in dirs:
-        value = _parse_project_cgroups(directory / _PROJECT_CONFIG_NAME)
+        value = _parse_project_cgroups(directory / _PROJECT_CONFIG_NAME, key)
         if value is not None:
             return value
-        value = _parse_pyproject_mem(directory / _PYPROJECT_FILE_NAME)
+        value = _parse_pyproject_value(directory / _PYPROJECT_FILE_NAME, key)
         if value is not None:
             return value
     return None
 
 
-def _parse_project_cgroups(path: Path) -> str | None:
-    """Read the top-level ``mem`` key from a project ``cgroups.toml`` file."""
+def read_project_mem(cwd: Path | None = None) -> str | None:
+    """Read the per-project session mem cap from cwd or its git root."""
+    return read_project_value("mem", cwd=cwd)
+
+
+def _parse_project_cgroups(path: Path, key: str = "mem") -> str | None:
+    """Read a top-level key from a project ``cgroups.toml`` file."""
     try:
         with open(path, "rb") as fh:
             data = tomllib.load(fh)
     except (OSError, tomllib.TOMLDecodeError):
         return None
-    value = data.get("mem")
+    value = data.get(key)
     return str(value) if value is not None else None
 
 
-def _parse_pyproject_mem(path: Path) -> str | None:
-    """Read ``[tool.tmuxctl] mem`` from a ``pyproject.toml`` file."""
+def _parse_pyproject_value(path: Path, key: str = "mem") -> str | None:
+    """Read a ``[tool.tmuxctl]`` key from a ``pyproject.toml`` file."""
     try:
         with open(path, "rb") as fh:
             data = tomllib.load(fh)
     except (OSError, tomllib.TOMLDecodeError):
         return None
-    value = data.get("tool", {}).get("tmuxctl", {}).get("mem")
+    value = data.get("tool", {}).get("tmuxctl", {}).get(key)
     return str(value) if value is not None else None
 
 
@@ -251,6 +257,47 @@ def resolve_mem(
     return DEFAULT_MEM
 
 
+def resolve_swap(
+    *,
+    flag: str | None = None,
+    env: dict[str, str] | None = None,
+    cwd: Path | None = None,
+    user_config: dict[str, str] | None = None,
+) -> str:
+    """Resolve the per-session MemorySwapMax allowance, first match wins.
+
+    Precedence mirrors ``resolve_mem``:
+      1. explicit value
+      2. env var ``ROBUST_TMUX_SWAP``
+      3. per-project ``cgroups.toml`` or ``pyproject.toml`` ``[tool.tmuxctl]``
+      4. user config ``default_swap``
+      5. built-in default ``DEFAULT_SWAP`` (8G)
+    """
+    env = os.environ if env is None else env
+
+    if flag is not None:
+        parse_size(flag)
+        return flag
+
+    env_swap = env.get("ROBUST_TMUX_SWAP")
+    if env_swap is not None:
+        parse_size(env_swap)
+        return env_swap
+
+    project_swap = read_project_value("swap", cwd=cwd)
+    if project_swap is not None:
+        parse_size(project_swap)
+        return project_swap
+
+    cfg = read_user_config() if user_config is None else user_config
+    if cfg.get("default_swap") is not None:
+        value = cfg["default_swap"]
+        parse_size(value)
+        return value
+
+    return DEFAULT_SWAP
+
+
 def resolve_slice_max(
     *,
     user_config: dict[str, str] | None = None,
@@ -280,6 +327,21 @@ def resolve_slice_max(
     return format_size(slice_bytes)
 
 
+def resolve_slice_swap_max(
+    *,
+    user_config: dict[str, str] | None = None,
+) -> str:
+    """Resolve the parent-slice MemorySwapMax allowance."""
+    cfg = read_user_config() if user_config is None else user_config
+
+    if cfg.get("slice_swap_max") is not None:
+        value = cfg["slice_swap_max"]
+        parse_size(value)
+        return value
+
+    return DEFAULT_SWAP
+
+
 # ---------------------------------------------------------------------------
 # Slice unit management
 # ---------------------------------------------------------------------------
@@ -290,7 +352,12 @@ def _slice_unit_path() -> Path:
     return Path.home() / ".config" / "systemd" / "user" / _SLICE_NAME
 
 
-def ensure_slice(slice_max: str, *, unit_path: Path | None = None) -> bool:
+def ensure_slice(
+    slice_max: str,
+    *,
+    swap_max: str | None = None,
+    unit_path: Path | None = None,
+) -> bool:
     """Ensure ``~/.config/systemd/user/robust.slice`` exists with MemoryMax.
 
     Writes the unit (and runs ``systemctl --user daemon-reload``) only when
@@ -300,11 +367,14 @@ def ensure_slice(slice_max: str, *, unit_path: Path | None = None) -> bool:
     if not systemd_available():
         return False
 
+    resolved_swap = resolve_slice_swap_max() if swap_max is None else swap_max
+    parse_size(resolved_swap)
+
     path = unit_path or _slice_unit_path()
     desired = (
         "[Slice]\n"
         f"MemoryMax={slice_max}\n"
-        "MemorySwapMax=0\n"
+        f"MemorySwapMax={resolved_swap}\n"
     )
     try:
         existing = path.read_text(encoding="utf-8")
@@ -336,13 +406,16 @@ def ensure_slice(slice_max: str, *, unit_path: Path | None = None) -> bool:
 # ---------------------------------------------------------------------------
 # Scope wrapping
 # ---------------------------------------------------------------------------
-def scope_wrap(cmd: list[str], unit: str, mem: str) -> list[str]:
+def scope_wrap(cmd: list[str], unit: str, mem: str, *, swap: str | None = None) -> list[str]:
     """Wrap ``cmd`` so it runs inside a memory-capped systemd --user scope.
 
     Builds the ``systemd-run`` argv. ``cmd`` is the login shell (or any
     command) to run inside the scope; every command launched within the
     session inherits the cgroup cap.
     """
+    resolved_swap = resolve_swap() if swap is None else swap
+    parse_size(resolved_swap)
+
     return [
         "systemd-run",
         "--user",
@@ -351,7 +424,7 @@ def scope_wrap(cmd: list[str], unit: str, mem: str) -> list[str]:
         "-p",
         f"MemoryMax={mem}",
         "-p",
-        "MemorySwapMax=0",
+        f"MemorySwapMax={resolved_swap}",
         "-p",
         f"Slice={_SLICE_NAME}",
         "--quiet",

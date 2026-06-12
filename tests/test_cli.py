@@ -1075,13 +1075,69 @@ def test_doctor_runs(monkeypatch) -> None:
     monkeypatch.setattr("tmuxctl.cli._run_text", lambda args: "free output here")
     monkeypatch.setattr("tmuxctl.cli.robust.systemd_available", lambda: True)
     monkeypatch.setattr("tmuxctl.cli.tmux_api.list_sessions", lambda: ["main"])
-    monkeypatch.setattr("tmuxctl.cli.robust.scope_property", lambda unit, prop: "5G" if prop == "MemoryMax" else "1G")
+    monkeypatch.setattr(
+        "tmuxctl.cli.robust.scope_properties",
+        lambda unit, props: {
+            "MemoryMax": "5G",
+            "MemorySwapMax": "8G",
+            "MemoryPeak": "1G",
+        },
+    )
 
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     assert "RAM" in result.output
     assert "main" in result.output
     assert "MemoryMax=5G" in result.output
+    assert "MemorySwapMax=8G" in result.output
+
+
+def test_limit_updates_live_session_limits(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_set_session_limits(session_name: str, *, mem: str | None, swap: str | None) -> None:
+        captured["session_name"] = session_name
+        captured["mem"] = mem
+        captured["swap"] = swap
+
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.set_session_limits", fake_set_session_limits)
+
+    result = runner.invoke(app, ["limit", "main", "--mem", "30G", "--swap", "8G"])
+
+    assert result.exit_code == 0
+    assert captured == {"session_name": "main", "mem": "30G", "swap": "8G"}
+    assert "Updated main: MemoryMax=30G MemorySwapMax=8G" in result.output
+
+
+def test_limit_accepts_current_session_alias(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.current_session_name", lambda: "main")
+    monkeypatch.setattr(
+        "tmuxctl.cli.tmux_api.set_session_limits",
+        lambda session_name, *, mem=None, swap=None: captured.update(
+            {"session_name": session_name, "mem": mem, "swap": swap}
+        ),
+    )
+
+    result = runner.invoke(app, ["limit", ":current", "--swap", "12G"])
+
+    assert result.exit_code == 0
+    assert captured == {"session_name": "main", "mem": None, "swap": "12G"}
+    assert "Updated main: MemorySwapMax=12G" in result.output
+
+
+def test_limit_requires_mem_or_swap(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tmuxctl.cli.tmux_api.set_session_limits",
+        lambda session_name, *, mem=None, swap=None: (_ for _ in ()).throw(
+            RuntimeError("provide --mem, --swap, or both")
+        ),
+    )
+
+    result = runner.invoke(app, ["limit", "main"])
+
+    assert result.exit_code == 1
+    assert "provide --mem, --swap, or both" in result.output
 
 
 def _mk_pane(window=0, pane=0, pid=111, command="bash", cwd="/home/a", active=True):
@@ -1156,5 +1212,3 @@ def test_describe_missing_session(monkeypatch) -> None:
     result = runner.invoke(app, ["describe", "ghost"])
     assert result.exit_code == 1
     assert "was not found" in result.output
-
-

@@ -147,8 +147,15 @@ def test_create_or_attach_wraps_shell_in_scope_when_systemd(monkeypatch) -> None
     # Deterministic systemd-available path.
     monkeypatch.setattr(robust, "systemd_available", lambda: True)
     monkeypatch.setattr(robust, "resolve_mem", lambda *, flag=None, cwd=None: "7G")
+    monkeypatch.setattr(robust, "resolve_swap", lambda *, cwd=None: "2G")
     monkeypatch.setattr(robust, "resolve_slice_max", lambda: "40G")
-    monkeypatch.setattr(robust, "ensure_slice", lambda slice_max: True)
+    monkeypatch.setattr(robust, "resolve_slice_swap_max", lambda: "12G")
+    ensured: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        robust,
+        "ensure_slice",
+        lambda slice_max, *, swap_max=None: ensured.append((slice_max, swap_max)) or True,
+    )
     monkeypatch.setattr(tmux_api, "_login_shell", lambda: ["/bin/bash", "-l"])
     monkeypatch.setattr(tmux_api.os, "getcwd", lambda: "/home/me/proj")
 
@@ -164,9 +171,10 @@ def test_create_or_attach_wraps_shell_in_scope_when_systemd(monkeypatch) -> None
     assert create_cmd[:6] == ["new-session", "-d", "-s", "proj", "-c", "/home/me/proj"]
     # The wrapped login shell follows, built by robust.scope_wrap.
     assert create_cmd[6:] == robust.scope_wrap(
-        ["/bin/bash", "-l"], "tmuxctl-proj", "7G"
+        ["/bin/bash", "-l"], "tmuxctl-proj", "7G", swap="2G"
     )
     assert "systemd-run" in create_cmd
+    assert ensured == [("40G", "12G")]
 
 
 def test_create_detached_is_noop_when_session_exists(monkeypatch) -> None:
@@ -211,8 +219,10 @@ def test_create_detached_wraps_scope_and_honors_start_dir(monkeypatch) -> None:
         robust, "resolve_mem",
         lambda *, flag=None, cwd=None: seen_cwd.append((flag, cwd)) or "30G",
     )
+    monkeypatch.setattr(robust, "resolve_swap", lambda *, cwd=None: "6G")
     monkeypatch.setattr(robust, "resolve_slice_max", lambda: "40G")
-    monkeypatch.setattr(robust, "ensure_slice", lambda slice_max: True)
+    monkeypatch.setattr(robust, "resolve_slice_swap_max", lambda: "12G")
+    monkeypatch.setattr(robust, "ensure_slice", lambda slice_max, *, swap_max=None: True)
     monkeypatch.setattr(tmux_api, "_login_shell", lambda: ["/bin/bash", "-l"])
     monkeypatch.setattr(
         tmux_api, "_run_tmux",
@@ -223,7 +233,9 @@ def test_create_detached_wraps_scope_and_honors_start_dir(monkeypatch) -> None:
 
     create_cmd = captured[0]
     assert create_cmd[:6] == ["new-session", "-d", "-s", "proj", "-c", "/repo"]
-    assert create_cmd[6:] == robust.scope_wrap(["/bin/bash", "-l"], "tmuxctl-proj", "30G")
+    assert create_cmd[6:] == robust.scope_wrap(
+        ["/bin/bash", "-l"], "tmuxctl-proj", "30G", swap="6G"
+    )
     assert "systemd-run" in create_cmd
     # mem resolved against the start_dir, so the repo's cgroups.toml policy wins.
     assert seen_cwd == [(None, Path("/repo"))]
@@ -233,8 +245,10 @@ def test_create_detached_flag_overrides_mem(monkeypatch) -> None:
     captured: list[list[str]] = []
     monkeypatch.setattr(tmux_api, "session_exists", lambda session_name: False)
     monkeypatch.setattr(robust, "systemd_available", lambda: True)
+    monkeypatch.setattr(robust, "resolve_swap", lambda *, cwd=None: "6G")
     monkeypatch.setattr(robust, "resolve_slice_max", lambda: "40G")
-    monkeypatch.setattr(robust, "ensure_slice", lambda slice_max: True)
+    monkeypatch.setattr(robust, "resolve_slice_swap_max", lambda: "12G")
+    monkeypatch.setattr(robust, "ensure_slice", lambda slice_max, *, swap_max=None: True)
     monkeypatch.setattr(tmux_api, "_login_shell", lambda: ["/bin/bash", "-l"])
     monkeypatch.setattr(tmux_api.os, "getcwd", lambda: "/work/dir")
     monkeypatch.setattr(
@@ -244,7 +258,9 @@ def test_create_detached_flag_overrides_mem(monkeypatch) -> None:
 
     tmux_api.create_detached_session("proj", mem="8G")
 
-    assert captured[0][6:] == robust.scope_wrap(["/bin/bash", "-l"], "tmuxctl-proj", "8G")
+    assert captured[0][6:] == robust.scope_wrap(
+        ["/bin/bash", "-l"], "tmuxctl-proj", "8G", swap="6G"
+    )
 
 
 def test_kill_session_stops_scope(monkeypatch) -> None:
@@ -260,6 +276,49 @@ def test_kill_session_stops_scope(monkeypatch) -> None:
     tmux_api.kill_session("proj")
 
     assert stopped == ["tmuxctl-proj"]
+
+
+def test_set_session_limits_updates_scope_properties(monkeypatch) -> None:
+    monkeypatch.setattr(tmux_api, "session_exists", lambda session_name: True)
+    monkeypatch.setattr(robust, "systemd_available", lambda: True)
+    calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(tmux_api.subprocess, "run", fake_run)
+
+    tmux_api.set_session_limits("proj", mem="30G", swap="8G")
+
+    assert calls == [
+        [
+            "systemctl",
+            "--user",
+            "set-property",
+            "tmuxctl-proj.scope",
+            "MemoryMax=30G",
+            "MemorySwapMax=8G",
+        ]
+    ]
+
+
+def test_set_session_limits_requires_limit(monkeypatch) -> None:
+    with pytest.raises(tmux_api.TmuxCommandError, match="provide --mem"):
+        tmux_api.set_session_limits("proj")
+
+
+def test_set_session_limits_reports_systemctl_failure(monkeypatch) -> None:
+    monkeypatch.setattr(tmux_api, "session_exists", lambda session_name: True)
+    monkeypatch.setattr(robust, "systemd_available", lambda: True)
+    monkeypatch.setattr(
+        tmux_api.subprocess,
+        "run",
+        lambda args, **k: subprocess.CompletedProcess(args, 1, "", "not a scope"),
+    )
+
+    with pytest.raises(tmux_api.TmuxCommandError, match="not a scope"):
+        tmux_api.set_session_limits("proj", mem="30G")
 
 
 def test_session_exists_uses_exact_match(monkeypatch) -> None:

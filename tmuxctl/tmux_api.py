@@ -245,14 +245,18 @@ def _new_session_command(session_name: str, cwd: str, *, flag: str | None) -> li
     """
     unit = robust.scope_unit_name(session_name)
     mem = _resolve_session_mem(cwd, flag=flag)
+    swap = _resolve_session_swap(cwd)
 
     if mem is not None and robust.systemd_available():
         # Ensure the parent slice exists before any capped session joins it.
         try:
-            robust.ensure_slice(robust.resolve_slice_max())
+            robust.ensure_slice(
+                robust.resolve_slice_max(),
+                swap_max=robust.resolve_slice_swap_max(),
+            )
         except Exception:  # noqa: BLE001 - slice bound is best-effort
             pass
-        wrapped = robust.scope_wrap(_login_shell(), unit, mem)
+        wrapped = robust.scope_wrap(_login_shell(), unit, mem, swap=swap)
         return ["new-session", "-d", "-s", session_name, "-c", cwd, *wrapped]
 
     if mem is not None:
@@ -269,6 +273,14 @@ def _resolve_session_mem(cwd: str, *, flag: str | None = None) -> str | None:
         return robust.resolve_mem(flag=flag, cwd=Path(cwd))
     except Exception:  # noqa: BLE001 - never block session creation on config
         return robust.DEFAULT_MEM
+
+
+def _resolve_session_swap(cwd: str) -> str:
+    """Resolve the per-session MemorySwapMax allowance for a new session."""
+    try:
+        return robust.resolve_swap(cwd=Path(cwd))
+    except Exception:  # noqa: BLE001 - never block session creation on config
+        return robust.DEFAULT_SWAP
 
 
 def process_cgroup(pid: int) -> str | None:
@@ -300,6 +312,44 @@ def kill_session(session_name: str) -> None:
 
     # Tear down the session's memory-capped scope so the cgroup is reaped.
     robust.stop_scope(robust.scope_unit_name(session_name))
+
+
+def set_session_limits(
+    session_name: str,
+    *,
+    mem: str | None = None,
+    swap: str | None = None,
+) -> None:
+    """Update MemoryMax/MemorySwapMax for an already-running tmuxctl scope."""
+    if mem is None and swap is None:
+        raise TmuxCommandError("provide --mem, --swap, or both")
+    if not session_exists(session_name):
+        raise TmuxSessionNotFoundError(f"tmux session '{session_name}' was not found")
+    if not robust.systemd_available():
+        raise TmuxCommandError("systemd-run unavailable; session limits cannot be changed")
+
+    properties: list[str] = []
+    if mem is not None:
+        robust.parse_size(mem)
+        properties.append(f"MemoryMax={mem}")
+    if swap is not None:
+        robust.parse_size(swap)
+        properties.append(f"MemorySwapMax={swap}")
+
+    scope = f"{robust.scope_unit_name(session_name)}.scope"
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "set-property", scope, *properties],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, FileNotFoundError) as exc:
+        raise TmuxCommandError("systemctl unavailable; session limits cannot be changed") from exc
+
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        raise TmuxCommandError(stderr or f"failed to update limits for '{session_name}'")
 
 
 def rename_session(session_name: str, new_name: str) -> None:

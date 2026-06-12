@@ -172,6 +172,85 @@ It is idempotent (a no-op if the session already exists), resolves the memory ca
 the same way as the other verbs (`--mem` flag → project `cgroups.toml` /
 `pyproject [tool.tmuxctl]` → default), and prints the session name on success.
 
+#### Memory and swap limits
+
+tmux has one server process that owns all sessions. If one pane starts a
+runaway build, test VM, emulator, or agent process and the machine runs out of
+RAM, the kernel can kill that shared tmux server. When that happens, every tmux
+session disappears, including unrelated work.
+
+tmuxctl avoids that by starting each new session's login shell through
+`systemd-run --user --scope`:
+
+```text
+tmux server
+└── robust.slice
+    ├── tmuxctl-project-a.scope  MemoryMax=12G MemorySwapMax=8G
+    └── tmuxctl-project-b.scope  MemoryMax=24G MemorySwapMax=8G
+```
+
+The tmux server stays outside those per-session scopes. Commands launched from
+a pane inherit the cgroup of that session's shell, so memory accounting covers
+the whole process tree for that session. If one session exceeds its hard
+`MemoryMax`, systemd/kernel OOM handling kills processes inside that scope
+instead of letting pressure spill into the shared tmux server and unrelated
+sessions.
+
+By default, new sessions get `MemoryMax=12G` and `MemorySwapMax=8G`. The memory
+cap protects the tmux server from runaway work; the swap allowance lets a
+transient spike survive instead of going straight to an OOM kill.
+
+Set per-user defaults in `~/.config/tmuxctl/cgroups.toml`:
+
+```toml
+default_mem = "24G"
+default_swap = "8G"
+slice_max = "56G"
+slice_swap_max = "16G"
+```
+
+Set per-project defaults in either `cgroups.toml`:
+
+```toml
+mem = "24G"
+swap = "8G"
+```
+
+or `pyproject.toml`:
+
+```toml
+[tool.tmuxctl]
+mem = "24G"
+swap = "8G"
+```
+
+`swap = "0"` is still valid when you want hard no-swap scope behavior.
+
+`--mem` and config defaults apply when a session is created:
+
+```bash
+t :my-session --mem 30G
+t create-detached my-session --mem 30G
+```
+
+For an existing tmuxctl-created session, change the live systemd scope with
+`limit`:
+
+```bash
+t limit my-session --mem 30G
+t limit my-session --mem 30G --swap 8G
+t limit :current --swap 12G
+```
+
+Under the hood, this updates the session's systemd scope:
+
+```bash
+systemctl --user set-property tmuxctl-my-session.scope MemoryMax=24G MemorySwapMax=8G
+```
+
+Live changes are not written back to config. Use `~/.config/tmuxctl/cgroups.toml`
+or project config when you want future sessions to start with those limits.
+
 ### 4. Send a one-off message
 
 Send text directly:
