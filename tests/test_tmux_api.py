@@ -181,6 +181,21 @@ def test_kill_session_stops_scope(monkeypatch) -> None:
     assert stopped == ["tmuxctl-proj"]
 
 
+def test_session_exists_uses_exact_match(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_tmux(args, *, check=True, timeout=None):
+        captured["args"] = args
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(tmux_api, "_run_tmux", fake_run_tmux)
+
+    assert tmux_api.session_exists("git-pocketshell") is True
+    # Leading '=' forces an exact match so a prefix like "git-pocketshell"
+    # never matches an existing "git-pocketshell-desktop".
+    assert captured["args"] == ["has-session", "-t", "=git-pocketshell"]
+
+
 def test_session_panes_parses_list_panes(monkeypatch) -> None:
     monkeypatch.setattr(tmux_api, "session_exists", lambda name: True)
 

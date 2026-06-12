@@ -139,7 +139,11 @@ def session_panes(session_name: str) -> list[PaneInfo]:
 
 
 def session_exists(name: str) -> bool:
-    result = _run_tmux(["has-session", "-t", name], check=False)
+    # The leading '=' forces tmux to do an EXACT match. Without it, tmux's -t
+    # target does prefix/fnmatch matching, so "git-pocketshell" would falsely
+    # match an existing "git-pocketshell-desktop" -- and create-or-attach would
+    # attach to the wrong session instead of creating a new one.
+    result = _run_tmux(["has-session", "-t", f"={name}"], check=False)
     return result.returncode == 0
 
 

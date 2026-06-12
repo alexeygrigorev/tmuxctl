@@ -1,6 +1,6 @@
 [project]
 name = "tmuxctl"
-version = "0.1.7"
+version = "0.1.8"
 description = "Small tmux session controller with recurring sends"
 readme = "README.md"
 requires-python = ">=3.10"
