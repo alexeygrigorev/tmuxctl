@@ -33,6 +33,7 @@ ROOT_COMMAND_NAMES = {
     "send",
     "attach",
     "create-or-attach",
+    "create-detached",
     "kill",
     "k",
     "rename",
@@ -509,6 +510,35 @@ def create_or_attach(
         )
     except Exception as exc:
         _fail(str(exc))
+
+
+@app.command("create-detached")
+def create_detached(
+    session_name: Annotated[str, typer.Argument(autocompletion=_complete_session_names)],
+    start_dir: Annotated[
+        str | None,
+        typer.Option("--start-dir", "-c", help="Working directory for the new session."),
+    ] = None,
+    mem: Annotated[
+        str | None,
+        typer.Option("--mem", help="Memory cap for this session's scope, e.g. 24G."),
+    ] = None,
+) -> None:
+    """Create a memory-capped detached session without attaching.
+
+    Idempotent: a no-op if the session already exists. For consumers that
+    attach over their own transport (e.g. tmux -CC control mode).
+    """
+    session_name = _resolve_session_name(session_name)
+    try:
+        tmux_api.create_detached_session(
+            session_name,
+            start_dir=start_dir,
+            mem=mem,
+        )
+    except Exception as exc:
+        _fail(str(exc))
+    typer.echo(session_name)
 
 
 @app.command()

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
+
+import pytest
 
 from tmuxctl import robust, tmux_api
 
@@ -164,6 +167,84 @@ def test_create_or_attach_wraps_shell_in_scope_when_systemd(monkeypatch) -> None
         ["/bin/bash", "-l"], "tmuxctl-proj", "7G"
     )
     assert "systemd-run" in create_cmd
+
+
+def test_create_detached_is_noop_when_session_exists(monkeypatch) -> None:
+    monkeypatch.setattr(tmux_api, "session_exists", lambda session_name: True)
+
+    called: list[list[str]] = []
+    monkeypatch.setattr(
+        tmux_api, "_run_tmux",
+        lambda args, **k: called.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
+    )
+
+    tmux_api.create_detached_session("proj")
+
+    assert called == []  # idempotent: never resurrect or duplicate
+
+
+def test_create_detached_plain_when_no_systemd(monkeypatch) -> None:
+    captured: list[list[str]] = []
+    monkeypatch.setattr(tmux_api, "session_exists", lambda session_name: False)
+    monkeypatch.setattr(tmux_api, "attach_session", lambda *a, **k: pytest.fail("must not attach"))
+    _disable_systemd(monkeypatch)
+
+    monkeypatch.setattr(
+        tmux_api, "_run_tmux",
+        lambda args, **k: captured.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
+    )
+
+    tmux_api.create_detached_session("git-workshops")
+
+    # Detached, never attached, plain (uncapped) session at the resolved cwd.
+    assert captured == [["new-session", "-d", "-s", "git-workshops", "-c", "/work/dir"]]
+
+
+def test_create_detached_wraps_scope_and_honors_start_dir(monkeypatch) -> None:
+    captured: list[list[str]] = []
+    monkeypatch.setattr(tmux_api, "session_exists", lambda session_name: False)
+    monkeypatch.setattr(tmux_api, "attach_session", lambda *a, **k: pytest.fail("must not attach"))
+
+    monkeypatch.setattr(robust, "systemd_available", lambda: True)
+    seen_cwd: list = []
+    monkeypatch.setattr(
+        robust, "resolve_mem",
+        lambda *, flag=None, cwd=None: seen_cwd.append((flag, cwd)) or "30G",
+    )
+    monkeypatch.setattr(robust, "resolve_slice_max", lambda: "40G")
+    monkeypatch.setattr(robust, "ensure_slice", lambda slice_max: True)
+    monkeypatch.setattr(tmux_api, "_login_shell", lambda: ["/bin/bash", "-l"])
+    monkeypatch.setattr(
+        tmux_api, "_run_tmux",
+        lambda args, **k: captured.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
+    )
+
+    tmux_api.create_detached_session("proj", start_dir="/repo")
+
+    create_cmd = captured[0]
+    assert create_cmd[:6] == ["new-session", "-d", "-s", "proj", "-c", "/repo"]
+    assert create_cmd[6:] == robust.scope_wrap(["/bin/bash", "-l"], "tmuxctl-proj", "30G")
+    assert "systemd-run" in create_cmd
+    # mem resolved against the start_dir, so the repo's cgroups.toml policy wins.
+    assert seen_cwd == [(None, Path("/repo"))]
+
+
+def test_create_detached_flag_overrides_mem(monkeypatch) -> None:
+    captured: list[list[str]] = []
+    monkeypatch.setattr(tmux_api, "session_exists", lambda session_name: False)
+    monkeypatch.setattr(robust, "systemd_available", lambda: True)
+    monkeypatch.setattr(robust, "resolve_slice_max", lambda: "40G")
+    monkeypatch.setattr(robust, "ensure_slice", lambda slice_max: True)
+    monkeypatch.setattr(tmux_api, "_login_shell", lambda: ["/bin/bash", "-l"])
+    monkeypatch.setattr(tmux_api.os, "getcwd", lambda: "/work/dir")
+    monkeypatch.setattr(
+        tmux_api, "_run_tmux",
+        lambda args, **k: captured.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
+    )
+
+    tmux_api.create_detached_session("proj", mem="8G")
+
+    assert captured[0][6:] == robust.scope_wrap(["/bin/bash", "-l"], "tmuxctl-proj", "8G")
 
 
 def test_kill_session_stops_scope(monkeypatch) -> None:

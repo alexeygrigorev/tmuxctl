@@ -194,25 +194,7 @@ def create_or_attach_session(
         return
 
     cwd = os.getcwd()
-    unit = robust.scope_unit_name(session_name)
-    mem = _resolve_session_mem(cwd, flag=mem)
-
-    if mem is not None and robust.systemd_available():
-        # Ensure the parent slice exists before any capped session joins it.
-        try:
-            robust.ensure_slice(robust.resolve_slice_max())
-        except Exception:  # noqa: BLE001 - slice bound is best-effort
-            pass
-        wrapped = robust.scope_wrap(_login_shell(), unit, mem)
-        command = ["new-session", "-d", "-s", session_name, "-c", cwd, *wrapped]
-    else:
-        if mem is not None:
-            print(
-                "tmuxctl: systemd-run unavailable; session runs without a memory cap",
-                file=sys.stderr,
-            )
-        command = ["new-session", "-d", "-s", session_name, "-c", cwd]
-
+    command = _new_session_command(session_name, cwd, flag=mem)
     result = _run_tmux(command, check=False)
     if result.returncode != 0:
         stderr = (result.stderr or "").strip()
@@ -222,6 +204,63 @@ def create_or_attach_session(
         send_keys(session_name, shlex.join(shell_command), press_enter=True, enter_delay_ms=0)
 
     attach_session(session_name, resize_window=resize_window)
+
+
+def create_detached_session(
+    session_name: str,
+    *,
+    start_dir: str | None = None,
+    mem: str | None = None,
+) -> None:
+    """Create a memory-capped detached session without attaching.
+
+    The creation half of :func:`create_or_attach_session` (scope-wrapped under
+    ``robust.slice``) with the attach step removed — for consumers that attach
+    over their own transport (e.g. tmux ``-CC`` control mode) and would
+    otherwise build raw, uncapped ``new-session`` commands.
+
+    Idempotent: a no-op when the session already exists, so it never
+    resurrects or duplicates. ``mem`` resolves the same way as the other
+    verbs (flag → project config → default); without ``systemd-run``/cgroup
+    v2 it falls back to a plain detached session with no error.
+    """
+    if session_exists(session_name):
+        return
+
+    cwd = start_dir or os.getcwd()
+    command = _new_session_command(session_name, cwd, flag=mem)
+    result = _run_tmux(command, check=False)
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        raise TmuxCommandError(stderr or f"failed to create session '{session_name}'")
+
+
+def _new_session_command(session_name: str, cwd: str, *, flag: str | None) -> list[str]:
+    """Build the ``tmux new-session -d`` argv for a new session.
+
+    Scope-wraps the session under ``robust.slice`` with the resolved
+    ``MemoryMax`` when a cap applies and systemd is available; otherwise
+    returns a plain detached session (emitting a one-line stderr note when a
+    cap was wanted but ``systemd-run`` is unavailable).
+    """
+    unit = robust.scope_unit_name(session_name)
+    mem = _resolve_session_mem(cwd, flag=flag)
+
+    if mem is not None and robust.systemd_available():
+        # Ensure the parent slice exists before any capped session joins it.
+        try:
+            robust.ensure_slice(robust.resolve_slice_max())
+        except Exception:  # noqa: BLE001 - slice bound is best-effort
+            pass
+        wrapped = robust.scope_wrap(_login_shell(), unit, mem)
+        return ["new-session", "-d", "-s", session_name, "-c", cwd, *wrapped]
+
+    if mem is not None:
+        print(
+            "tmuxctl: systemd-run unavailable; session runs without a memory cap",
+            file=sys.stderr,
+        )
+    return ["new-session", "-d", "-s", session_name, "-c", cwd]
 
 
 def _resolve_session_mem(cwd: str, *, flag: str | None = None) -> str | None:

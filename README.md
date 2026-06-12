@@ -157,6 +157,21 @@ That resolves to:
 t create-or-attach git-workshops-asd
 ```
 
+#### Create without attaching
+
+`t create-detached` brings a memory-capped session into existence and returns
+immediately, without occupying your terminal. It is for tools that attach over
+their own transport (e.g. tmux `-CC` control mode) and would otherwise build raw,
+uncapped `new-session` commands:
+
+```bash
+t create-detached myproj -c ~/git/myproj
+```
+
+It is idempotent (a no-op if the session already exists), resolves the memory cap
+the same way as the other verbs (`--mem` flag → project `cgroups.toml` /
+`pyproject [tool.tmuxctl]` → default), and prints the session name on success.
+
 ### 4. Send a one-off message
 
 Send text directly:
