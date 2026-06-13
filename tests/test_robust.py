@@ -94,6 +94,46 @@ def test_scope_unit_name() -> None:
 
 
 # ---------------------------------------------------------------------------
+# server_bootstrap_argv — the shared server lives in its OWN unit, not a login
+# session scope, so a logout/per-session-OOM can't take every session down.
+# ---------------------------------------------------------------------------
+def test_server_unit_name() -> None:
+    assert robust.server_unit_name() == "tmuxctl-server"
+
+
+def test_server_bootstrap_argv_starts_server_in_own_unit_under_robust_slice() -> None:
+    argv = robust.server_bootstrap_argv()
+    # A persistent forking service under robust.slice — NOT a --scope tied to a
+    # login session, and NOT inheriting the caller's session-*.scope.
+    assert argv[:5] == [
+        "systemd-run",
+        "--user",
+        "--unit=tmuxctl-server",
+        "-p",
+        "Type=forking",
+    ]
+    assert "--scope" not in argv
+    assert "Slice=robust.slice" in argv
+    # Strongly negative OOM score: under slice pressure the kernel kills a
+    # session's capped workload first, never the server.
+    assert "OOMScoreAdjust=-900" in argv
+    # Default socket (tmuxctl's socket) — no -L override.
+    assert "-L" not in argv
+    # exit-empty off keeps the server alive with zero sessions after the hidden
+    # bootstrap session is killed; ';' separates the three tmux commands.
+    tail = argv[argv.index("--") + 1 :]
+    assert tail[:4] == ["tmux", "new-session", "-d", "-s"]
+    assert ["set", "-g", "exit-empty", "off"] == tail[tail.index("set") : tail.index("set") + 4]
+    assert "kill-session" in tail
+    assert tail.count(";") == 2
+
+
+def test_server_bootstrap_argv_accepts_explicit_unit() -> None:
+    argv = robust.server_bootstrap_argv("tmuxctl-server-test")
+    assert "--unit=tmuxctl-server-test" in argv
+
+
+# ---------------------------------------------------------------------------
 # resolve_mem precedence
 # ---------------------------------------------------------------------------
 def test_resolve_mem_flag_wins(monkeypatch, tmp_path) -> None:

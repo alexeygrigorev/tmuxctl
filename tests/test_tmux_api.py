@@ -164,6 +164,7 @@ def test_create_or_attach_wraps_shell_in_scope_when_systemd(monkeypatch) -> None
         return subprocess.CompletedProcess(args, 0, "", "")
 
     monkeypatch.setattr(tmux_api, "_run_tmux", fake_run_tmux)
+    monkeypatch.setattr(tmux_api, "ensure_server", lambda: None)
 
     tmux_api.create_or_attach_session("proj")
 
@@ -229,6 +230,7 @@ def test_create_detached_wraps_scope_and_honors_start_dir(monkeypatch) -> None:
         lambda args, **k: captured.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
     )
 
+    monkeypatch.setattr(tmux_api, "ensure_server", lambda: None)
     tmux_api.create_detached_session("proj", start_dir="/repo")
 
     create_cmd = captured[0]
@@ -256,11 +258,95 @@ def test_create_detached_flag_overrides_mem(monkeypatch) -> None:
         lambda args, **k: captured.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
     )
 
+    monkeypatch.setattr(tmux_api, "ensure_server", lambda: None)
     tmux_api.create_detached_session("proj", mem="8G")
 
     assert captured[0][6:] == robust.scope_wrap(
         ["/bin/bash", "-l"], "tmuxctl-proj", "8G", swap="6G"
     )
+
+
+def test_server_running_true_on_empty_server(monkeypatch) -> None:
+    # rc 0 with no sessions = server up (exit-empty off), still "running".
+    monkeypatch.setattr(
+        tmux_api, "_run_tmux",
+        lambda args, **k: subprocess.CompletedProcess(args, 0, "", ""),
+    )
+    assert tmux_api._server_running() is True
+
+
+def test_server_running_false_when_no_server(monkeypatch) -> None:
+    monkeypatch.setattr(
+        tmux_api, "_run_tmux",
+        lambda args, **k: subprocess.CompletedProcess(args, 1, "", "no server running on /tmp/x"),
+    )
+    assert tmux_api._server_running() is False
+
+
+def test_ensure_server_noop_without_systemd(monkeypatch) -> None:
+    monkeypatch.setattr(robust, "systemd_available", lambda: False)
+    monkeypatch.setattr(
+        tmux_api, "_server_running",
+        lambda: pytest.fail("must not probe when systemd is unavailable"),
+    )
+    monkeypatch.setattr(
+        tmux_api.subprocess, "run",
+        lambda *a, **k: pytest.fail("must not bootstrap a server without systemd"),
+    )
+    tmux_api.ensure_server()  # graceful no-op
+
+
+def test_ensure_server_skips_when_server_already_running(monkeypatch) -> None:
+    monkeypatch.setattr(robust, "systemd_available", lambda: True)
+    monkeypatch.setattr(tmux_api, "_server_running", lambda: True)
+    monkeypatch.setattr(
+        tmux_api.subprocess, "run",
+        lambda *a, **k: pytest.fail("must not bootstrap over an existing server"),
+    )
+    tmux_api.ensure_server()
+
+
+def test_ensure_server_bootstraps_in_own_unit_when_no_server(monkeypatch) -> None:
+    monkeypatch.setattr(robust, "systemd_available", lambda: True)
+    monkeypatch.setattr(tmux_api, "_server_running", lambda: False)
+    monkeypatch.setattr(robust, "resolve_slice_max", lambda: "40G")
+    monkeypatch.setattr(robust, "resolve_slice_swap_max", lambda: "12G")
+    ensured: list = []
+    monkeypatch.setattr(
+        robust, "ensure_slice",
+        lambda slice_max, *, swap_max=None: ensured.append((slice_max, swap_max)) or True,
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        tmux_api.subprocess, "run",
+        lambda args, **k: calls.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
+    )
+
+    tmux_api.ensure_server()
+
+    # Parent slice bound first, then the server bootstrapped in its own unit.
+    assert ensured == [("40G", "12G")]
+    assert calls == [robust.server_bootstrap_argv()]
+
+
+def test_create_detached_ensures_server_before_creating(monkeypatch) -> None:
+    order: list[str] = []
+    monkeypatch.setattr(tmux_api, "session_exists", lambda name: False)
+    monkeypatch.setattr(tmux_api, "ensure_server", lambda: order.append("ensure_server"))
+    monkeypatch.setattr(
+        tmux_api, "_new_session_command",
+        lambda name, cwd, *, flag: ["new-session", "-d", "-s", name],
+    )
+    monkeypatch.setattr(
+        tmux_api, "_run_tmux",
+        lambda args, **k: order.append("new-session") or subprocess.CompletedProcess(args, 0, "", ""),
+    )
+
+    tmux_api.create_detached_session("proj")
+
+    # The server must be in its safe unit BEFORE the first session is created,
+    # otherwise that session spawns the server inside the caller's login scope.
+    assert order == ["ensure_server", "new-session"]
 
 
 def test_kill_session_stops_scope(monkeypatch) -> None:

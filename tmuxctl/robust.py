@@ -39,6 +39,19 @@ _SLICE_NAME = "robust.slice"
 _PYPROJECT_FILE_NAME = "pyproject.toml"
 _PROJECT_CONFIG_NAME = "cgroups.toml"
 
+# Dedicated systemd unit that owns the shared tmux server's cgroup, so the
+# server lives independently of any SSH login session scope (see
+# ``server_bootstrap_argv``).
+_SERVER_UNIT = "tmuxctl-server"
+# Hidden session created then immediately killed to start the server cleanly;
+# ``exit-empty off`` keeps the server alive afterwards with zero sessions.
+_SERVER_BOOTSTRAP_SESSION = "__tmuxctl_server__"
+# Strongly negative OOM score so the cgroup OOM-killer never picks the tmux
+# server when ``robust.slice`` is under pressure: a runaway session's workload
+# (in its own capped scope) is killed first, and the server + every other
+# session survive.
+_SERVER_OOM_SCORE_ADJUST = "-900"
+
 _SIZE_UNITS = {
     "B": 1,
     "K": 1024,
@@ -99,6 +112,11 @@ def _warn(message: str) -> None:
 def scope_unit_name(session_name: str) -> str:
     """The systemd unit base name for a session (without ``.scope``)."""
     return f"tmuxctl-{session_name}"
+
+
+def server_unit_name() -> str:
+    """The systemd unit base name owning the shared tmux server (no suffix)."""
+    return _SERVER_UNIT
 
 
 # ---------------------------------------------------------------------------
@@ -508,6 +526,53 @@ def scope_wrap(
         "--quiet",
         "--",
         *cmd,
+    ]
+
+
+def server_bootstrap_argv(unit: str | None = None) -> list[str]:
+    """Argv that starts the tmux SERVER in its OWN persistent systemd unit.
+
+    The shared tmux server normally inherits the cgroup of whichever SSH login
+    first spawns it (``session-<N>.scope``, managed by logind). When that login
+    logs out, systemd reaps the session scope and the server dies inside it,
+    taking *every* session on the server down at once — the failure this guards
+    against (and which a per-session ``scope_wrap`` does NOT, because it caps the
+    pane shell, not the server).
+
+    Starting the server in a dedicated ``Type=forking`` service under
+    ``robust.slice`` — independent of any login, with a strongly negative
+    ``OOMScoreAdjust`` so it is never the OOM victim — makes it survive both
+    login teardown and per-session OOM. ``exit-empty off`` keeps it alive with
+    zero sessions; a hidden bootstrap session is created then immediately killed
+    so the server starts cleanly. Uses the default socket (tmuxctl's socket).
+    """
+    unit = unit or server_unit_name()
+    return [
+        "systemd-run",
+        "--user",
+        f"--unit={unit}",
+        "-p",
+        "Type=forking",
+        "-p",
+        f"Slice={_SLICE_NAME}",
+        "-p",
+        f"OOMScoreAdjust={_SERVER_OOM_SCORE_ADJUST}",
+        "--quiet",
+        "--",
+        "tmux",
+        "new-session",
+        "-d",
+        "-s",
+        _SERVER_BOOTSTRAP_SESSION,
+        ";",
+        "set",
+        "-g",
+        "exit-empty",
+        "off",
+        ";",
+        "kill-session",
+        "-t",
+        _SERVER_BOOTSTRAP_SESSION,
     ]
 
 

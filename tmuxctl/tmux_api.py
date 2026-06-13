@@ -182,6 +182,62 @@ def _login_shell() -> list[str]:
     return [shell, "-l"]
 
 
+def _server_running() -> bool:
+    """True when a tmux server is reachable on the default socket.
+
+    Distinguishes a running-but-empty server (rc 0, no sessions) from no server
+    at all ("no server running" on stderr), so :func:`ensure_server` never
+    bootstraps a second server over an existing one.
+    """
+    result = _run_tmux(["list-sessions"], check=False)
+    if result.returncode == 0:
+        return True
+    return "no server running" not in (result.stderr or "").lower()
+
+
+def server_pid() -> int | None:
+    """PID of the tmux server on the default socket, or None if not running."""
+    result = _run_tmux(["display-message", "-p", "#{pid}"], check=False)
+    if result.returncode != 0:
+        return None
+    try:
+        return int((result.stdout or "").strip())
+    except ValueError:
+        return None
+
+
+def ensure_server() -> None:
+    """Ensure the tmux server runs in its own login-independent systemd unit.
+
+    No-op when a server is already running (we never migrate or duplicate one)
+    or when systemd user scopes are unavailable (the server then runs wherever
+    tmux puts it, as before — graceful degrade). Otherwise bootstraps a
+    persistent server under ``robust.slice`` via
+    :func:`robust.server_bootstrap_argv`, so a login logout or a per-session OOM
+    can no longer take down every session at once.
+    """
+    if not robust.systemd_available():
+        return
+    if _server_running():
+        return
+    try:
+        robust.ensure_slice(
+            robust.resolve_slice_max(),
+            swap_max=robust.resolve_slice_swap_max(),
+        )
+    except Exception:  # noqa: BLE001 - slice bound is best-effort
+        pass
+    try:
+        subprocess.run(
+            robust.server_bootstrap_argv(),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, FileNotFoundError):
+        pass
+
+
 def create_or_attach_session(
     session_name: str,
     *,
@@ -193,6 +249,7 @@ def create_or_attach_session(
         attach_session(session_name, resize_window=resize_window)
         return
 
+    ensure_server()
     cwd = os.getcwd()
     command = _new_session_command(session_name, cwd, flag=mem)
     result = _run_tmux(command, check=False)
@@ -227,6 +284,7 @@ def create_detached_session(
     if session_exists(session_name):
         return
 
+    ensure_server()
     cwd = start_dir or os.getcwd()
     command = _new_session_command(session_name, cwd, flag=mem)
     result = _run_tmux(command, check=False)

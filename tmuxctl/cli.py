@@ -961,6 +961,38 @@ def doctor() -> None:
             )
 
     typer.echo("")
+    typer.echo("== tmux server placement ==")
+    if not robust.systemd_available():
+        typer.echo("(systemd unavailable)")
+    else:
+        pid = tmux_api.server_pid()
+        if pid is None:
+            typer.echo("(no tmux server running)")
+        else:
+            cgroup = tmux_api.process_cgroup(pid) or "?"
+            login_scoped = (
+                "/session-" in cgroup
+                and cgroup.endswith(".scope")
+                and "robust.slice" not in cgroup
+            )
+            if login_scoped:
+                typer.echo(f"  WARNING: server pid {pid} lives in a login session scope:")
+                typer.echo(f"    {cgroup}")
+                typer.echo(
+                    "    => it DIES when that SSH login logs out, taking ALL sessions"
+                )
+                typer.echo(
+                    "       with it. Cold-restart the server through tmuxctl so it moves"
+                )
+                typer.echo(
+                    f"       into its own {robust.server_unit_name()} unit under robust.slice."
+                )
+            elif robust.server_unit_name() in cgroup or "robust.slice" in cgroup:
+                typer.echo(f"  ok: server pid {pid} is login-independent ({cgroup})")
+            else:
+                typer.echo(f"  server pid {pid}: {cgroup}")
+
+    typer.echo("")
     typer.echo("== crash survivors (dead but registered sessions) ==")
     report = strays_mod.scan_all()
     dead_found = False
