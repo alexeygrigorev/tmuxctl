@@ -55,6 +55,7 @@ ROOT_COMMAND_NAMES = {
     "info",
     "strays",
     "reap",
+    "reap-clients",
 }
 
 PROGRAM_NAME = "tmuxctl"
@@ -1023,6 +1024,13 @@ def doctor() -> None:
     if report.orphan_pids:
         dead_found = True
         typer.echo(f"  orphaned tmux server pids: {report.orphan_pids}")
+    orphan_clients = strays_mod.scan_orphan_control_clients()
+    for client in orphan_clients:
+        dead_found = True
+        typer.echo(
+            f"  orphan control client {client.target} on session "
+            f"{client.session} ({client.socket}) — 't reap-clients'"
+        )
     if not dead_found:
         typer.echo("(none)")
 
@@ -1298,6 +1306,20 @@ def _print_stray_report(report: strays_mod.StrayReport, *, stale: int | None) ->
             typer.echo(f"  {pid}")
 
 
+def _print_orphan_control_clients(
+    orphans: list[strays_mod.ControlClient],
+) -> None:
+    if not orphans:
+        return
+    typer.echo("")
+    typer.echo("Orphan control-mode clients (detach with 't reap-clients --yes'):")
+    for client in orphans:
+        typer.echo(
+            f"  {client.target}  session={client.session}  "
+            f"idle={_format_idle(client.idle_days())}  socket={client.socket}"
+        )
+
+
 @app.command()
 def strays(
     stale: Annotated[
@@ -1308,6 +1330,7 @@ def strays(
     """Scan ALL tmux sockets for stray sessions, dead sockets, orphan servers."""
     report = strays_mod.scan_all()
     _print_stray_report(report, stale=stale)
+    _print_orphan_control_clients(strays_mod.scan_orphan_control_clients())
 
 
 @app.command()
@@ -1365,6 +1388,42 @@ def reap(
     if not yes:
         typer.echo("")
         typer.echo("Dry-run. Re-run with --yes to apply.")
+
+
+@app.command("reap-clients")
+def reap_clients(
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", help="Actually detach (otherwise dry-run)."),
+    ] = False,
+) -> None:
+    """Detach orphan control-mode clients (stale -CC duplicates) (guarded).
+
+    The PocketShell app attaches over tmux ``-CC`` control mode and holds
+    exactly ONE control-mode client per session, detaching it cleanly on exit.
+    An app crash / force-kill can strand that control client attached forever.
+    This finds sessions carrying more than one control-mode client and detaches
+    the older/idle duplicates, keeping the most-recently-active one. It NEVER
+    kills a session, a server, or a non-control (interactive) client.
+    """
+    orphans = strays_mod.scan_orphan_control_clients()
+    if not orphans:
+        typer.echo("No orphan control-mode clients.")
+        return
+
+    action = "Detaching" if yes else "Would detach"
+    for client in orphans:
+        typer.echo(
+            f"{action} orphan control client {client.target} "
+            f"(session {client.session}, socket {client.socket}, "
+            f"idle {_format_idle(client.idle_days())})"
+        )
+        if yes and not strays_mod.detach_client(client.socket, client.target):
+            typer.echo("  (failed)")
+
+    if not yes:
+        typer.echo("")
+        typer.echo("Dry-run. Re-run with --yes to detach.")
 
 
 app.add_typer(jobs_app, name="jobs")

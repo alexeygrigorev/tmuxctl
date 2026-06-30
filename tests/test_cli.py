@@ -967,6 +967,12 @@ def _socket_scan(monkeypatch, scans, dead=None, orphans=None):
         orphan_pids=orphans or [],
     )
     monkeypatch.setattr("tmuxctl.cli.strays_mod.scan_all", lambda *a, **k: report)
+    # Keep these tests hermetic: don't let the strays/doctor reporting path
+    # shell out to real `tmux list-clients`. Tests that exercise the orphan
+    # control-client path override this stub explicitly.
+    monkeypatch.setattr(
+        "tmuxctl.cli.strays_mod.scan_orphan_control_clients", lambda *a, **k: []
+    )
     return report
 
 
@@ -1090,6 +1096,90 @@ def test_doctor_runs(monkeypatch) -> None:
     assert "main" in result.output
     assert "MemoryMax=5G" in result.output
     assert "MemorySwapMax=8G" in result.output
+
+
+# ---------------------------------------------------------------------------
+# reap-clients: orphan control-mode client detach (pocketshell #1123 item 7)
+# ---------------------------------------------------------------------------
+def _orphan(name="/dev/pts/9", session="work", socket="/tmp/tmux-1000/default"):
+    from tmuxctl import strays as strays_mod
+
+    return strays_mod.ControlClient(
+        socket=socket, name=name, tty=name, session=session,
+        activity_at=0, control_mode=True,
+    )
+
+
+def test_reap_clients_none(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tmuxctl.cli.strays_mod.scan_orphan_control_clients", lambda *a, **k: []
+    )
+    result = runner.invoke(app, ["reap-clients"])
+    assert result.exit_code == 0
+    assert "No orphan control-mode clients." in result.output
+
+
+def test_reap_clients_dry_run_does_not_detach(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tmuxctl.cli.strays_mod.scan_orphan_control_clients",
+        lambda *a, **k: [_orphan()],
+    )
+    detached: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "tmuxctl.cli.strays_mod.detach_client",
+        lambda sock, target: detached.append((sock, target)) or True,
+    )
+
+    result = runner.invoke(app, ["reap-clients"])
+    assert result.exit_code == 0
+    assert "Would detach" in result.output
+    assert "Dry-run" in result.output
+    assert detached == []  # nothing detached without --yes
+
+
+def test_reap_clients_yes_detaches(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tmuxctl.cli.strays_mod.scan_orphan_control_clients",
+        lambda *a, **k: [_orphan(name="/dev/pts/9")],
+    )
+    detached: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "tmuxctl.cli.strays_mod.detach_client",
+        lambda sock, target: detached.append((sock, target)) or True,
+    )
+
+    result = runner.invoke(app, ["reap-clients", "--yes"])
+    assert result.exit_code == 0
+    assert "Detaching" in result.output
+    assert detached == [("/tmp/tmux-1000/default", "/dev/pts/9")]
+
+
+def test_reap_clients_reports_failed_detach(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tmuxctl.cli.strays_mod.scan_orphan_control_clients",
+        lambda *a, **k: [_orphan()],
+    )
+    monkeypatch.setattr(
+        "tmuxctl.cli.strays_mod.detach_client", lambda sock, target: False
+    )
+    result = runner.invoke(app, ["reap-clients", "--yes"])
+    assert result.exit_code == 0
+    assert "(failed)" in result.output
+
+
+def test_strays_reports_orphan_control_clients(monkeypatch) -> None:
+    scan = _mk_scan("/tmp/tmux-1000/default", [_mk_session("main", attached=True)])
+    _socket_scan(monkeypatch, [scan])
+    # Override the hermetic stub installed by _socket_scan.
+    monkeypatch.setattr(
+        "tmuxctl.cli.strays_mod.scan_orphan_control_clients",
+        lambda *a, **k: [_orphan(name="/dev/pts/9", session="work")],
+    )
+    result = runner.invoke(app, ["strays"])
+    assert result.exit_code == 0
+    assert "Orphan control-mode clients" in result.output
+    assert "/dev/pts/9" in result.output
+    assert "session=work" in result.output
 
 
 def test_limit_updates_live_session_limits(monkeypatch) -> None:
