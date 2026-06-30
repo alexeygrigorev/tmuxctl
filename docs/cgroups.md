@@ -40,6 +40,10 @@ have its own resource limits.
 tmuxctl uses this shape:
 
 ```text
+tmuxctl-server.slice
+└── tmuxctl-server.service
+    └── tmux server
+
 robust.slice
 ├── tmuxctl-project-a.scope
 │   └── shell + commands from that tmux session
@@ -51,7 +55,8 @@ robust.slice
 
 Short version:
 
-- `robust.slice`: parent bucket for all tmuxctl-created sessions.
+- `tmuxctl-server.slice`: uncapped home for the shared tmux server.
+- `robust.slice`: capped parent bucket for all tmuxctl-created session work.
 - `tmuxctl-*.scope`: one running tmux session's process tree.
 
 ## How session launch works

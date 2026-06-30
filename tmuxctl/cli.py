@@ -889,6 +889,15 @@ def jobs_daemon(
     scheduler.run_daemon(poll_interval=poll_interval)
 
 
+@app.command("daemon", hidden=True)
+def daemon_alias(
+    poll_interval: Annotated[int, typer.Option("--poll-interval", min=1, help="Seconds between job polls.")] = 3,
+    run_once: Annotated[bool, typer.Option("--run-once", help="Process due jobs once and exit.")] = False,
+) -> None:
+    """Backward-compatible alias for ``tmuxctl jobs daemon``."""
+    jobs_daemon(poll_interval=poll_interval, run_once=run_once)
+
+
 def _run_text(args: list[str]) -> str:
     try:
         result = subprocess.run(args, capture_output=True, text=True, check=False)
@@ -985,9 +994,19 @@ def doctor() -> None:
                     "       with it. Cold-restart the server through tmuxctl so it moves"
                 )
                 typer.echo(
-                    f"       into its own {robust.server_unit_name()} unit under robust.slice."
+                    f"       into {robust.server_unit_name()} under {robust.server_slice_name()}."
                 )
-            elif robust.server_unit_name() in cgroup or "robust.slice" in cgroup:
+            elif "robust.slice" in cgroup:
+                typer.echo(f"  WARNING: server pid {pid} lives in the workload slice:")
+                typer.echo(f"    {cgroup}")
+                typer.echo(
+                    "    => aggregate workload OOM can still kill the shared tmux server."
+                )
+                typer.echo(
+                    "       Cold-restart it through tmuxctl so it moves into "
+                    f"{robust.server_slice_name()}."
+                )
+            elif robust.server_unit_name() in cgroup or robust.server_slice_name() in cgroup:
                 typer.echo(f"  ok: server pid {pid} is login-independent ({cgroup})")
             else:
                 typer.echo(f"  server pid {pid}: {cgroup}")

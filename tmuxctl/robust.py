@@ -4,8 +4,9 @@ Root cause this module guards against: uncapped heavy work (builds/agents)
 exhausts RAM, the kernel's machine-wide OOM-killer kills the shared tmux
 SERVER, and every session dies at once. By launching each session's process
 tree inside a memory-capped systemd --user scope (cgroup v2), bounded by a
-parent slice, a runaway is OOM-killed in isolation and the tmux server
-(outside any scope) always survives.
+parent workload slice, a runaway is OOM-killed in isolation. The tmux server
+runs in a separate, uncapped server slice so aggregate workload pressure cannot
+select it when the workload slice hits its limit.
 
 All functions degrade gracefully: when ``systemd-run`` is unavailable
 (containers/CI), the session runs uncapped and a one-line warning is emitted
@@ -36,6 +37,7 @@ DEFAULT_SWAP = "8G"
 DEFAULT_HIGH_FRACTION = 85  # percent of mem
 
 _SLICE_NAME = "robust.slice"
+_SERVER_SLICE_NAME = "tmuxctl-server.slice"
 _PYPROJECT_FILE_NAME = "pyproject.toml"
 _PROJECT_CONFIG_NAME = "cgroups.toml"
 
@@ -46,10 +48,9 @@ _SERVER_UNIT = "tmuxctl-server"
 # Hidden session created then immediately killed to start the server cleanly;
 # ``exit-empty off`` keeps the server alive afterwards with zero sessions.
 _SERVER_BOOTSTRAP_SESSION = "__tmuxctl_server__"
-# Strongly negative OOM score so the cgroup OOM-killer never picks the tmux
-# server when ``robust.slice`` is under pressure: a runaway session's workload
-# (in its own capped scope) is killed first, and the server + every other
-# session survive.
+# Strongly negative OOM score so the machine-wide OOM killer strongly avoids
+# the tmux server. The server is intentionally outside ``robust.slice`` so a
+# parent-slice cgroup OOM cannot pick it at all.
 _SERVER_OOM_SCORE_ADJUST = "-900"
 
 _SIZE_UNITS = {
@@ -117,6 +118,11 @@ def scope_unit_name(session_name: str) -> str:
 def server_unit_name() -> str:
     """The systemd unit base name owning the shared tmux server (no suffix)."""
     return _SERVER_UNIT
+
+
+def server_slice_name() -> str:
+    """The uncapped systemd user slice that owns the shared tmux server."""
+    return _SERVER_SLICE_NAME
 
 
 # ---------------------------------------------------------------------------
@@ -540,11 +546,12 @@ def server_bootstrap_argv(unit: str | None = None) -> list[str]:
     pane shell, not the server).
 
     Starting the server in a dedicated ``Type=forking`` service under
-    ``robust.slice`` — independent of any login, with a strongly negative
-    ``OOMScoreAdjust`` so it is never the OOM victim — makes it survive both
-    login teardown and per-session OOM. ``exit-empty off`` keeps it alive with
-    zero sessions; a hidden bootstrap session is created then immediately killed
-    so the server starts cleanly. Uses the default socket (tmuxctl's socket).
+    ``tmuxctl-server.slice`` — independent of any login and separate from the
+    memory-capped workload ``robust.slice`` — makes it survive login teardown,
+    per-session OOM, and aggregate workload-slice OOM. ``exit-empty off`` keeps
+    it alive with zero sessions; a hidden bootstrap session is created then
+    immediately killed so the server starts cleanly. Uses the default socket
+    (tmuxctl's socket).
     """
     unit = unit or server_unit_name()
     return [
@@ -554,7 +561,7 @@ def server_bootstrap_argv(unit: str | None = None) -> list[str]:
         "-p",
         "Type=forking",
         "-p",
-        f"Slice={_SLICE_NAME}",
+        f"Slice={_SERVER_SLICE_NAME}",
         "-p",
         f"OOMScoreAdjust={_SERVER_OOM_SCORE_ADJUST}",
         "--quiet",
@@ -590,6 +597,46 @@ def stop_scope(unit: str) -> None:
         )
     except (OSError, FileNotFoundError):
         pass
+
+
+def _reset_unit(unit: str) -> None:
+    """stop + reset-failed a fully-qualified ``--user`` unit. Errors ignored.
+
+    A transient unit whose processes have all exited can linger in a ``failed``
+    or inactive-but-loaded state instead of being garbage-collected.
+    ``systemd-run --unit=<name>`` then refuses the name ("already loaded") on the
+    next same-named bootstrap, so stop it and clear any failed state to release
+    the name. Best-effort: errors (including no such unit) are ignored."""
+    if not systemd_available():
+        return
+    for verb in ("stop", "reset-failed"):
+        try:
+            subprocess.run(
+                ["systemctl", "--user", verb, unit],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except (OSError, FileNotFoundError):
+            pass
+
+
+def reset_scope(unit: str) -> None:
+    """Free a dead session scope name so ``systemd-run --scope --unit=`` reuses it.
+
+    See :func:`_reset_unit`: a same-named session scope that outlived its session
+    blocks the next create. ``unit`` is the bare unit base (``.scope`` appended)."""
+    _reset_unit(unit if unit.endswith(".scope") else f"{unit}.scope")
+
+
+def reset_server_unit() -> None:
+    """Free a dead ``tmuxctl-server.service`` so the server can be re-bootstrapped.
+
+    The server runs in a fixed-name forking ``.service`` (see
+    :func:`server_bootstrap_argv`). If a previous server crashed and left the
+    unit ``failed``, ``systemd-run --unit=tmuxctl-server`` would refuse the name
+    and the server would silently fall back to an unprotected login scope."""
+    _reset_unit(f"{_SERVER_UNIT}.service")
 
 
 def scope_properties(unit: str, props: list[str]) -> dict[str, str]:

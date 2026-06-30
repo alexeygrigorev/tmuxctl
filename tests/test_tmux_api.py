@@ -18,6 +18,15 @@ def _disable_systemd(monkeypatch) -> None:
     monkeypatch.setattr(tmux_api.os, "getcwd", lambda: "/work/dir")
 
 
+def _no_stale_scope(monkeypatch) -> None:
+    """Pretend no same-named scope is lingering, so capped creation proceeds.
+
+    Keeps the scope-wrapping assertions independent of the host's real systemd
+    state (the dev box may have a leftover ``tmuxctl-proj.scope``).
+    """
+    monkeypatch.setattr(robust, "scope_properties", lambda unit, props: {})
+
+
 def test_attach_session_can_resize_window(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
@@ -158,6 +167,7 @@ def test_create_or_attach_wraps_shell_in_scope_when_systemd(monkeypatch) -> None
     )
     monkeypatch.setattr(tmux_api, "_login_shell", lambda: ["/bin/bash", "-l"])
     monkeypatch.setattr(tmux_api.os, "getcwd", lambda: "/home/me/proj")
+    _no_stale_scope(monkeypatch)
 
     def fake_run_tmux(args, *, check=True, timeout=10):
         captured.append(args)
@@ -176,6 +186,67 @@ def test_create_or_attach_wraps_shell_in_scope_when_systemd(monkeypatch) -> None
     )
     assert "systemd-run" in create_cmd
     assert ensured == [("40G", "12G")]
+
+
+def _scope_wrap_systemd(monkeypatch, captured: list[list[str]]) -> None:
+    """Deterministic capped-creation path shared by the stale-scope tests."""
+    monkeypatch.delenv("TMUX", raising=False)
+    session_exists_results = iter([False, True])
+    monkeypatch.setattr(tmux_api, "session_exists", lambda session_name: next(session_exists_results))
+    monkeypatch.setattr(tmux_api, "attach_session", lambda *a, **k: None)
+    monkeypatch.setattr(robust, "systemd_available", lambda: True)
+    monkeypatch.setattr(robust, "resolve_mem", lambda *, flag=None, cwd=None: "7G")
+    monkeypatch.setattr(robust, "resolve_swap", lambda *, cwd=None: "2G")
+    monkeypatch.setattr(robust, "resolve_slice_max", lambda: "40G")
+    monkeypatch.setattr(robust, "resolve_slice_swap_max", lambda: "12G")
+    monkeypatch.setattr(robust, "ensure_slice", lambda slice_max, *, swap_max=None: True)
+    monkeypatch.setattr(tmux_api, "_login_shell", lambda: ["/bin/bash", "-l"])
+    monkeypatch.setattr(tmux_api.os, "getcwd", lambda: "/home/me/proj")
+    monkeypatch.setattr(
+        tmux_api, "_run_tmux",
+        lambda args, **k: captured.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
+    )
+    monkeypatch.setattr(tmux_api, "ensure_server", lambda: None)
+
+
+def test_create_falls_back_to_uncapped_when_scope_still_active(monkeypatch) -> None:
+    # A live orphaned scope (an earlier same-named session left processes
+    # running) must not be silently killed: degrade to an uncapped session
+    # rather than colliding on the unit name and self-destructing.
+    captured: list[list[str]] = []
+    _scope_wrap_systemd(monkeypatch, captured)
+    monkeypatch.setattr(
+        robust, "scope_properties",
+        lambda unit, props: {"ActiveState": "active", "LoadState": "loaded"},
+    )
+    reset_calls: list[str] = []
+    monkeypatch.setattr(robust, "reset_scope", lambda unit: reset_calls.append(unit))
+
+    tmux_api.create_or_attach_session("proj")
+
+    # Plain (uncapped) new-session, no systemd-run wrapping, no destructive reset.
+    assert captured[0] == ["new-session", "-d", "-s", "proj", "-c", "/home/me/proj"]
+    assert "systemd-run" not in captured[0]
+    assert reset_calls == []
+
+
+def test_create_reaps_dead_scope_then_caps(monkeypatch) -> None:
+    # A dead-but-lingering scope (failed/inactive) is reset to free the name,
+    # then the new session is created capped as normal.
+    captured: list[list[str]] = []
+    _scope_wrap_systemd(monkeypatch, captured)
+    monkeypatch.setattr(
+        robust, "scope_properties",
+        lambda unit, props: {"ActiveState": "failed", "LoadState": "loaded"},
+    )
+    reset_calls: list[str] = []
+    monkeypatch.setattr(robust, "reset_scope", lambda unit: reset_calls.append(unit))
+
+    tmux_api.create_or_attach_session("proj")
+
+    assert reset_calls == ["tmuxctl-proj"]
+    assert captured[0][:6] == ["new-session", "-d", "-s", "proj", "-c", "/home/me/proj"]
+    assert "systemd-run" in captured[0]
 
 
 def test_create_detached_is_noop_when_session_exists(monkeypatch) -> None:
@@ -225,6 +296,7 @@ def test_create_detached_wraps_scope_and_honors_start_dir(monkeypatch) -> None:
     monkeypatch.setattr(robust, "resolve_slice_swap_max", lambda: "12G")
     monkeypatch.setattr(robust, "ensure_slice", lambda slice_max, *, swap_max=None: True)
     monkeypatch.setattr(tmux_api, "_login_shell", lambda: ["/bin/bash", "-l"])
+    _no_stale_scope(monkeypatch)
     monkeypatch.setattr(
         tmux_api, "_run_tmux",
         lambda args, **k: captured.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
@@ -253,6 +325,7 @@ def test_create_detached_flag_overrides_mem(monkeypatch) -> None:
     monkeypatch.setattr(robust, "ensure_slice", lambda slice_max, *, swap_max=None: True)
     monkeypatch.setattr(tmux_api, "_login_shell", lambda: ["/bin/bash", "-l"])
     monkeypatch.setattr(tmux_api.os, "getcwd", lambda: "/work/dir")
+    _no_stale_scope(monkeypatch)
     monkeypatch.setattr(
         tmux_api, "_run_tmux",
         lambda args, **k: captured.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
@@ -316,10 +389,13 @@ def test_ensure_server_bootstraps_in_own_unit_when_no_server(monkeypatch) -> Non
         robust, "ensure_slice",
         lambda slice_max, *, swap_max=None: ensured.append((slice_max, swap_max)) or True,
     )
+    order: list[str] = []
+    monkeypatch.setattr(robust, "reset_server_unit", lambda: order.append("reset"))
     calls: list[list[str]] = []
     monkeypatch.setattr(
         tmux_api.subprocess, "run",
-        lambda args, **k: calls.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
+        lambda args, **k: order.append("bootstrap") or calls.append(args)
+        or subprocess.CompletedProcess(args, 0, "", ""),
     )
 
     tmux_api.ensure_server()
@@ -327,6 +403,27 @@ def test_ensure_server_bootstraps_in_own_unit_when_no_server(monkeypatch) -> Non
     # Parent slice bound first, then the server bootstrapped in its own unit.
     assert ensured == [("40G", "12G")]
     assert calls == [robust.server_bootstrap_argv()]
+    # A dead leftover unit is reaped BEFORE the bootstrap reuses the name.
+    assert order == ["reset", "bootstrap"]
+
+
+def test_ensure_server_warns_when_bootstrap_fails(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(robust, "systemd_available", lambda: True)
+    monkeypatch.setattr(tmux_api, "_server_running", lambda: False)
+    monkeypatch.setattr(robust, "resolve_slice_max", lambda: "40G")
+    monkeypatch.setattr(robust, "resolve_slice_swap_max", lambda: "12G")
+    monkeypatch.setattr(robust, "ensure_slice", lambda slice_max, *, swap_max=None: True)
+    monkeypatch.setattr(robust, "reset_server_unit", lambda: None)
+    monkeypatch.setattr(
+        tmux_api.subprocess, "run",
+        lambda args, **k: subprocess.CompletedProcess(args, 1, "", "unit already loaded"),
+    )
+
+    tmux_api.ensure_server()
+
+    err = capsys.readouterr().err
+    assert "could not bootstrap" in err
+    assert "unit already loaded" in err
 
 
 def test_create_detached_ensures_server_before_creating(monkeypatch) -> None:

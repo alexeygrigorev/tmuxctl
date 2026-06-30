@@ -179,19 +179,30 @@ runaway build, test VM, emulator, or agent process and the machine runs out of
 RAM, the kernel can kill that shared tmux server. When that happens, every tmux
 session disappears, including unrelated work.
 
-tmuxctl avoids that by starting each new session's login shell through
+tmuxctl avoids that by keeping the shared tmux server in its own uncapped user
+service/slice and starting each new session's login shell through
 `systemd-run --user --scope`:
 
 ```text
-tmux server
-└── robust.slice
-    ├── tmuxctl-project-a.scope  MemoryHigh=10.2G MemoryMax=12G MemorySwapMax=8G
-    └── tmuxctl-project-b.scope  MemoryHigh=20.4G MemoryMax=24G MemorySwapMax=8G
+tmuxctl-server.slice
+└── tmuxctl-server.service
+    └── tmux server
+
+robust.slice
+├── tmuxctl-project-a.scope  MemoryHigh=10.2G MemoryMax=12G MemorySwapMax=8G
+└── tmuxctl-project-b.scope  MemoryHigh=20.4G MemoryMax=24G MemorySwapMax=8G
 ```
 
-The tmux server stays outside those per-session scopes. Commands launched from
-a pane inherit the cgroup of that session's shell, so memory accounting covers
-the whole process tree for that session. As a scope crosses its soft
+`tmuxctl-server` isn't a replacement for tmux. It's the systemd user service
+that starts and owns the normal shared tmux server process. tmuxctl starts that
+server in `tmuxctl-server.slice` so it doesn't inherit an SSH login cgroup and
+doesn't sit inside the capped workload slice. That matters because tmux has one
+server per socket: if the server dies, every session on that socket disappears.
+
+The tmux server stays outside those per-session scopes and outside the capped
+`robust.slice` parent. Commands launched from a pane inherit the cgroup of that
+session's shell, so memory accounting covers the whole process tree for that
+session. As a scope crosses its soft
 `MemoryHigh` threshold the kernel throttles it and reclaims pages (spilling cold
 ones to swap), so heavy work **slows down and waits** under transient pressure.
 Only if it still climbs to the hard `MemoryMax` does systemd/kernel OOM handling

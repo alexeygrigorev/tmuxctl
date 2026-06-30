@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 
 import pytest
 
@@ -101,10 +102,15 @@ def test_server_unit_name() -> None:
     assert robust.server_unit_name() == "tmuxctl-server"
 
 
-def test_server_bootstrap_argv_starts_server_in_own_unit_under_robust_slice() -> None:
+def test_server_slice_name() -> None:
+    assert robust.server_slice_name() == "tmuxctl-server.slice"
+
+
+def test_server_bootstrap_argv_starts_server_in_own_uncapped_slice() -> None:
     argv = robust.server_bootstrap_argv()
-    # A persistent forking service under robust.slice — NOT a --scope tied to a
-    # login session, and NOT inheriting the caller's session-*.scope.
+    # A persistent forking service under its own server slice — NOT a --scope
+    # tied to a login session, NOT inheriting the caller's session-*.scope, and
+    # NOT inside the workload-capped robust.slice.
     assert argv[:5] == [
         "systemd-run",
         "--user",
@@ -113,9 +119,10 @@ def test_server_bootstrap_argv_starts_server_in_own_unit_under_robust_slice() ->
         "Type=forking",
     ]
     assert "--scope" not in argv
-    assert "Slice=robust.slice" in argv
-    # Strongly negative OOM score: under slice pressure the kernel kills a
-    # session's capped workload first, never the server.
+    assert "Slice=tmuxctl-server.slice" in argv
+    assert "Slice=robust.slice" not in argv
+    # Strongly negative OOM score: if machine-wide OOM happens, avoid picking
+    # the shared tmux server.
     assert "OOMScoreAdjust=-900" in argv
     # Default socket (tmuxctl's socket) — no -L override.
     assert "-L" not in argv
@@ -497,6 +504,44 @@ def test_stop_scope_noop_without_systemd(monkeypatch) -> None:
     called = []
     monkeypatch.setattr(robust.subprocess, "run", lambda *a, **k: called.append(a))
     robust.stop_scope("tmuxctl-proj")
+    assert called == []
+
+
+def test_reset_scope_stops_and_clears_failed_state(monkeypatch) -> None:
+    monkeypatch.setattr(robust, "systemd_available", lambda: True)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        robust.subprocess, "run",
+        lambda args, **k: calls.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
+    )
+    robust.reset_scope("tmuxctl-proj")
+    # Stop first, then reset-failed, so the transient unit name frees up.
+    assert calls == [
+        ["systemctl", "--user", "stop", "tmuxctl-proj.scope"],
+        ["systemctl", "--user", "reset-failed", "tmuxctl-proj.scope"],
+    ]
+
+
+def test_reset_server_unit_targets_the_service(monkeypatch) -> None:
+    monkeypatch.setattr(robust, "systemd_available", lambda: True)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        robust.subprocess, "run",
+        lambda args, **k: calls.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
+    )
+    robust.reset_server_unit()
+    assert calls == [
+        ["systemctl", "--user", "stop", "tmuxctl-server.service"],
+        ["systemctl", "--user", "reset-failed", "tmuxctl-server.service"],
+    ]
+
+
+def test_reset_scope_noop_without_systemd(monkeypatch) -> None:
+    monkeypatch.setattr(robust, "systemd_available", lambda: False)
+    called = []
+    monkeypatch.setattr(robust.subprocess, "run", lambda *a, **k: called.append(a))
+    robust.reset_scope("tmuxctl-proj")
+    robust.reset_server_unit()
     assert called == []
 
 

@@ -212,9 +212,9 @@ def ensure_server() -> None:
     No-op when a server is already running (we never migrate or duplicate one)
     or when systemd user scopes are unavailable (the server then runs wherever
     tmux puts it, as before — graceful degrade). Otherwise bootstraps a
-    persistent server under ``robust.slice`` via
-    :func:`robust.server_bootstrap_argv`, so a login logout or a per-session OOM
-    can no longer take down every session at once.
+    persistent server outside the capped workload slice via
+    :func:`robust.server_bootstrap_argv`, so a login logout, per-session OOM, or
+    aggregate workload-slice OOM can no longer take down every session at once.
     """
     if not robust.systemd_available():
         return
@@ -227,15 +227,27 @@ def ensure_server() -> None:
         )
     except Exception:  # noqa: BLE001 - slice bound is best-effort
         pass
+    # A crashed server can leave its fixed-name unit in a failed/loaded state;
+    # systemd-run would then refuse the name and tmux would fall back to an
+    # unprotected login-scoped server. Free the dead name before bootstrapping.
+    robust.reset_server_unit()
     try:
-        subprocess.run(
+        result = subprocess.run(
             robust.server_bootstrap_argv(),
             capture_output=True,
             text=True,
             check=False,
         )
     except (OSError, FileNotFoundError):
-        pass
+        return
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip()
+        print(
+            "tmuxctl: could not bootstrap the persistent tmux server"
+            f"{f' ({detail})' if detail else ''}; it may run unprotected in the "
+            "login scope.",
+            file=sys.stderr,
+        )
 
 
 def create_or_attach_session(
@@ -304,8 +316,32 @@ def _new_session_command(session_name: str, cwd: str, *, flag: str | None) -> li
     unit = robust.scope_unit_name(session_name)
     mem = _resolve_session_mem(cwd, flag=flag)
     swap = _resolve_session_swap(cwd)
+    plain = ["new-session", "-d", "-s", session_name, "-c", cwd]
 
     if mem is not None and robust.systemd_available():
+        # A same-named scope can outlive its session (a direct ``tmux
+        # kill-session``, a server restart that reparents the pane, or a
+        # backgrounded process keeping the cgroup open). ``systemd-run --unit=``
+        # then refuses the name, the wrapped shell dies instantly, tmux destroys
+        # the new 0-window session, and the caller sees only a misleading
+        # "session was not found". Reconcile the leftover before reusing the name.
+        props = robust.scope_properties(unit, ["ActiveState", "LoadState"])
+        if props.get("ActiveState") == "active":
+            # Live processes from an earlier session still own the scope; we must
+            # not kill them silently, so degrade to an uncapped session (as when
+            # systemd-run is unavailable) and tell the user how to reclaim it.
+            print(
+                f"tmuxctl: scope {unit}.scope still has live processes from an "
+                f"earlier '{session_name}' session; new session runs WITHOUT a "
+                f"memory cap. Reclaim the name with "
+                f"'systemctl --user stop {unit}.scope'.",
+                file=sys.stderr,
+            )
+            return plain
+        if props.get("LoadState") == "loaded":
+            # Dead-but-lingering (failed/inactive) scope: free the name to reuse.
+            robust.reset_scope(unit)
+
         # Ensure the parent slice exists before any capped session joins it.
         try:
             robust.ensure_slice(
@@ -323,7 +359,7 @@ def _new_session_command(session_name: str, cwd: str, *, flag: str | None) -> li
             "tmuxctl: systemd-run unavailable; session runs without a memory cap",
             file=sys.stderr,
         )
-    return ["new-session", "-d", "-s", session_name, "-c", cwd]
+    return plain
 
 
 def _resolve_session_mem(cwd: str, *, flag: str | None = None) -> str | None:

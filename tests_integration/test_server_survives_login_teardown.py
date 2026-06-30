@@ -106,7 +106,7 @@ def test_server_in_login_scope_dies_with_it() -> None:
 
 def test_server_in_own_unit_survives_login_teardown() -> None:
     """THE FIX: a server bootstrapped via ``server_bootstrap_argv`` (its own unit
-    under robust.slice) survives a login teardown — server AND every session.
+    outside robust.slice) survives a login teardown — server AND every session.
     """
     sock = f"tmuxctl-it-fix-{os.getpid()}"
     unit = f"tmuxctl-server-it-{os.getpid()}"
