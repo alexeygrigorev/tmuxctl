@@ -559,8 +559,7 @@ def test_expand_suffix_name_swaps_the_suffix(monkeypatch) -> None:
 
 
 def test_expand_suffix_name_adds_a_suffix_to_an_unsuffixed_session(monkeypatch) -> None:
-    # git-dtc-website IS the directory-derived name, so a textual "drop the last
-    # segment" would wrongly yield git-dtc-cli; the whole name is the prefix.
+    # git-dtc-website IS the directory-derived name, so it gains a suffix.
     _fake_home(monkeypatch)
     monkeypatch.setattr(
         "tmuxctl.cli.tmux_api.session_path", lambda name: "/home/alexey/git/dtc-website"
@@ -568,18 +567,28 @@ def test_expand_suffix_name_adds_a_suffix_to_an_unsuffixed_session(monkeypatch) 
     assert cli._expand_suffix_name("git-dtc-website", "-design") == "git-dtc-website-design"
 
 
-def test_expand_suffix_name_appends_when_name_is_not_directory_derived(monkeypatch) -> None:
-    # A hand-picked name has no known prefix, so append instead of guessing.
+def test_expand_suffix_name_ignores_a_hand_picked_current_name(monkeypatch) -> None:
+    # The prefix is always the directory, never the current name — a name that
+    # drifted from its directory is normalized back onto it.
     _fake_home(monkeypatch)
     monkeypatch.setattr(
         "tmuxctl.cli.tmux_api.session_path", lambda name: "/home/alexey/git/ai-shipping-labs"
     )
-    assert cli._expand_suffix_name("qa1415full", "-cli") == "qa1415full-cli"
+    assert cli._expand_suffix_name("qa1415full", "-cli") == "git-ai-shipping-labs-cli"
 
 
-def test_expand_suffix_name_appends_when_path_is_unknown(monkeypatch) -> None:
+def test_rename_rejects_suffix_shorthand_when_path_is_unknown(monkeypatch) -> None:
+    def unexpected(*args) -> None:
+        raise AssertionError("must not rename without a directory to build the name from")
+
+    monkeypatch.setattr("tmuxctl.cli._conn", lambda: object())
     monkeypatch.setattr("tmuxctl.cli.tmux_api.session_path", lambda name: None)
-    assert cli._expand_suffix_name("git-dataops-sop", "-cli") == "git-dataops-sop-cli"
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.rename_session", unexpected)
+
+    result = runner.invoke(app, ["rename", "git-dataops-sop", "-cli"])
+
+    assert result.exit_code != 0
+    assert "unable to read the working directory" in result.output
 
 
 def test_expand_suffix_name_normalizes_the_suffix(monkeypatch) -> None:

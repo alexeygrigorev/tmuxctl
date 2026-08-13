@@ -395,18 +395,18 @@ t rename codex codex-main
 t rename 2 archived-worker
 ```
 
-A name starting with a dash is a suffix shorthand: it keeps the session's prefix
-and swaps the suffix, so you do not have to retype the project part.
+A name starting with a dash is a suffix shorthand: `-cli` always means
+`<session's directory>-cli`, so you do not have to retype the project part.
 
 ```bash
 t rename 2 -cli          # git-dataops-sop  ->  git-dataops-cli
 ```
 
-The prefix is the name derived from the session's own working directory (the
-same rule that named it when it was created), so a session that has no suffix
-yet gains one — `git-dtc-website` becomes `git-dtc-website-design` — instead of
-losing part of its name. If the current name was not derived from its directory,
-the suffix is appended to the whole name.
+The prefix is the name derived from the session's own working directory — the
+same rule that named it when it was created — and the suffix replaces whatever
+followed it. A session with no suffix yet gains one (`git-dtc-website` becomes
+`git-dtc-website-design`). The current name is never consulted, so a hand-picked
+name is normalized back onto its directory.
 
 ## Inspect a Session
 

@@ -148,14 +148,14 @@ def _normalize_session_name(value: str) -> str:
 def _expand_suffix_name(session_name: str, new_name: str) -> str:
     """Expand a leading-dash shorthand like ``-cli`` into a full session name.
 
-    Sessions are named ``<directory-derived prefix>[-<suffix>]`` (see
-    ``_current_directory_session_name``), so ``-cli`` means "keep this session's
-    prefix, swap the suffix": ``git-dataops-sop`` becomes ``git-dataops-cli``.
-    The prefix comes from the session's own working directory, which is what
-    named it in the first place — that way a session with no suffix yet
-    (``git-dtc-website``) gains one instead of losing part of its name. If the
-    current name isn't derived from its directory, the whole name is the prefix
-    and the suffix is appended. Names without a leading dash pass through.
+    ``-cli`` always means ``<session's directory>-cli``: the prefix is the name
+    ``_current_directory_session_name`` derives from the session's own working
+    directory — the same rule that named it when it was created — and the suffix
+    replaces whatever followed it. So ``git-dataops-sop`` becomes
+    ``git-dataops-cli``, and a session with no suffix yet (``git-dtc-website``)
+    gains one. The current name is never consulted, so a hand-picked name is
+    normalized back onto its directory. Names without a leading dash pass
+    through unchanged.
     """
     if not new_name.startswith("-"):
         return new_name
@@ -164,13 +164,13 @@ def _expand_suffix_name(session_name: str, new_name: str) -> str:
     if not suffix:
         _fail(f"'{new_name}' has no suffix to rename to")
 
-    prefix = session_name
     path = tmux_api.session_path(session_name)
-    if path:
-        base = _current_directory_session_name(cwd=Path(path))
-        if session_name == base or session_name.startswith(f"{base}-"):
-            prefix = base
-    return f"{prefix}-{suffix}"
+    if not path:
+        _fail(
+            f"unable to read the working directory of '{session_name}';"
+            f" pass a full name instead of '{new_name}'"
+        )
+    return f"{_current_directory_session_name(cwd=Path(path))}-{suffix}"
 
 
 def _fail(message: str, *, code: int = 1) -> None:
