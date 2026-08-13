@@ -130,6 +130,17 @@ def list_session_info() -> list[SessionInfo]:
     return sessions
 
 
+def session_path(session_name: str) -> str | None:
+    """The session's working directory (``#{session_path}``), or None if unknown."""
+    result = _run_tmux(
+        ["display-message", "-p", "-t", session_name, "#{session_path}"], check=False
+    )
+    if result.returncode != 0:
+        return None
+    path = (result.stdout or "").strip()
+    return path or None
+
+
 _PANE_FORMAT = (
     "#{window_index}\t#{pane_index}\t#{pane_pid}\t"
     "#{pane_current_command}\t#{pane_current_path}\t#{pane_active}"

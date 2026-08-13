@@ -544,6 +544,110 @@ def test_rename_by_numeric_id(monkeypatch) -> None:
     assert "Renamed session older to archived (0 job(s) updated)" in result.output
 
 
+def _fake_home(monkeypatch, home: str = "/home/alexey") -> None:
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: Path(home)))
+
+
+def test_expand_suffix_name_swaps_the_suffix(monkeypatch) -> None:
+    # The prefix comes from the session's own directory, so the existing
+    # suffix is replaced rather than stacked onto.
+    _fake_home(monkeypatch)
+    monkeypatch.setattr(
+        "tmuxctl.cli.tmux_api.session_path", lambda name: "/home/alexey/git/dataops"
+    )
+    assert cli._expand_suffix_name("git-dataops-sop", "-cli") == "git-dataops-cli"
+
+
+def test_expand_suffix_name_adds_a_suffix_to_an_unsuffixed_session(monkeypatch) -> None:
+    # git-dtc-website IS the directory-derived name, so a textual "drop the last
+    # segment" would wrongly yield git-dtc-cli; the whole name is the prefix.
+    _fake_home(monkeypatch)
+    monkeypatch.setattr(
+        "tmuxctl.cli.tmux_api.session_path", lambda name: "/home/alexey/git/dtc-website"
+    )
+    assert cli._expand_suffix_name("git-dtc-website", "-design") == "git-dtc-website-design"
+
+
+def test_expand_suffix_name_appends_when_name_is_not_directory_derived(monkeypatch) -> None:
+    # A hand-picked name has no known prefix, so append instead of guessing.
+    _fake_home(monkeypatch)
+    monkeypatch.setattr(
+        "tmuxctl.cli.tmux_api.session_path", lambda name: "/home/alexey/git/ai-shipping-labs"
+    )
+    assert cli._expand_suffix_name("qa1415full", "-cli") == "qa1415full-cli"
+
+
+def test_expand_suffix_name_appends_when_path_is_unknown(monkeypatch) -> None:
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.session_path", lambda name: None)
+    assert cli._expand_suffix_name("git-dataops-sop", "-cli") == "git-dataops-sop-cli"
+
+
+def test_expand_suffix_name_normalizes_the_suffix(monkeypatch) -> None:
+    _fake_home(monkeypatch)
+    monkeypatch.setattr(
+        "tmuxctl.cli.tmux_api.session_path", lambda name: "/home/alexey/git/dataops"
+    )
+    assert cli._expand_suffix_name("git-dataops-sop", "-v1.2") == "git-dataops-v1_2"
+
+
+def test_expand_suffix_name_passes_through_a_full_name(monkeypatch) -> None:
+    def unexpected(name: str) -> str:
+        raise AssertionError("session_path must not be consulted for a full name")
+
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.session_path", unexpected)
+    assert cli._expand_suffix_name("git-dataops-sop", "git-other") == "git-other"
+
+
+def test_rename_with_suffix_shorthand_by_numeric_id(monkeypatch) -> None:
+    # End to end: `t rename 2 -cli` must survive CLI option parsing (a bare
+    # leading dash) and rename jobs to the expanded name too.
+    captured: dict[str, object] = {}
+    _fake_home(monkeypatch)
+    monkeypatch.setattr("tmuxctl.cli._conn", lambda: object())
+    monkeypatch.setattr(
+        "tmuxctl.cli.tmux_api.list_session_info",
+        lambda: [
+            SessionInfo(name="git-dataops-cards", created_at=200, activity_at=200),
+            SessionInfo(name="git-dataops-sop", created_at=100, activity_at=300),
+        ],
+    )
+    monkeypatch.setattr(
+        "tmuxctl.cli.tmux_api.session_path", lambda name: "/home/alexey/git/dataops"
+    )
+
+    def fake_rename_session(session_name: str, new_name: str) -> None:
+        captured["session_name"] = session_name
+        captured["new_name"] = new_name
+
+    def fake_rename_session_jobs(conn, *, session_name: str, new_session_name: str) -> int:
+        captured["job_new_session_name"] = new_session_name
+        return 1
+
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.rename_session", fake_rename_session)
+    monkeypatch.setattr("tmuxctl.cli.storage.rename_session_jobs", fake_rename_session_jobs)
+
+    result = runner.invoke(app, ["rename", "2", "-cli"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["session_name"] == "git-dataops-sop"
+    assert captured["new_name"] == "git-dataops-cli"
+    assert captured["job_new_session_name"] == "git-dataops-cli"
+    assert "Renamed session git-dataops-sop to git-dataops-cli" in result.output
+
+
+def test_rename_rejects_a_bare_dash(monkeypatch) -> None:
+    def unexpected(*args) -> None:
+        raise AssertionError("must not rename on an empty suffix")
+
+    monkeypatch.setattr("tmuxctl.cli._conn", lambda: object())
+    monkeypatch.setattr("tmuxctl.cli.tmux_api.rename_session", unexpected)
+
+    result = runner.invoke(app, ["rename", "git-dataops-sop", "-"])
+
+    assert result.exit_code != 0
+    assert "no suffix" in result.output
+
+
 def test_complete_session_names_filters_matches(monkeypatch) -> None:
     monkeypatch.setattr("tmuxctl.cli.tmux_api.list_sessions", lambda: ["rk-codex", "rk-worker", "other"])
 

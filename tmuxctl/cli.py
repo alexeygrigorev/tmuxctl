@@ -145,6 +145,34 @@ def _normalize_session_name(value: str) -> str:
     return _normalize_session_name_part(value)
 
 
+def _expand_suffix_name(session_name: str, new_name: str) -> str:
+    """Expand a leading-dash shorthand like ``-cli`` into a full session name.
+
+    Sessions are named ``<directory-derived prefix>[-<suffix>]`` (see
+    ``_current_directory_session_name``), so ``-cli`` means "keep this session's
+    prefix, swap the suffix": ``git-dataops-sop`` becomes ``git-dataops-cli``.
+    The prefix comes from the session's own working directory, which is what
+    named it in the first place — that way a session with no suffix yet
+    (``git-dtc-website``) gains one instead of losing part of its name. If the
+    current name isn't derived from its directory, the whole name is the prefix
+    and the suffix is appended. Names without a leading dash pass through.
+    """
+    if not new_name.startswith("-"):
+        return new_name
+
+    suffix = _normalize_session_name_part(new_name.lstrip("-"))
+    if not suffix:
+        _fail(f"'{new_name}' has no suffix to rename to")
+
+    prefix = session_name
+    path = tmux_api.session_path(session_name)
+    if path:
+        base = _current_directory_session_name(cwd=Path(path))
+        if session_name == base or session_name.startswith(f"{base}-"):
+            prefix = base
+    return f"{prefix}-{suffix}"
+
+
 def _fail(message: str, *, code: int = 1) -> None:
     typer.echo(f"Error: {message}", err=True)
     raise typer.Exit(code=code)
@@ -611,14 +639,22 @@ def limit(
     typer.echo(f"Updated {session_name}: {' '.join(parts)}")
 
 
-@app.command()
+# ``ignore_unknown_options`` lets the ``-cli`` suffix shorthand reach NEW_NAME
+# instead of being parsed as an (unknown) short option.
+@app.command(context_settings={"ignore_unknown_options": True})
 def rename(
     target: Annotated[str, typer.Argument(autocompletion=_complete_session_names)],
-    new_name: str,
+    new_name: Annotated[
+        str,
+        typer.Argument(
+            help="New session name, or -SUFFIX to keep the prefix and swap the suffix.",
+        ),
+    ],
     by: Annotated[SessionOrder, typer.Option("--by", help="Interpret numeric IDs using session creation time or last activity.")] = SessionOrder.created,
 ) -> None:
     """Rename a tmux session and retarget its scheduled jobs."""
     session_name = _resolve_session_target(target, by)
+    new_name = _expand_suffix_name(session_name, new_name)
     conn = _conn()
 
     try:
