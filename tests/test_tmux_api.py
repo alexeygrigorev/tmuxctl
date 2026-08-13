@@ -446,6 +446,83 @@ def test_create_detached_ensures_server_before_creating(monkeypatch) -> None:
     assert order == ["ensure_server", "new-session"]
 
 
+# --- Issue #1170: create-detached must not hang when the spawned server ---
+# --- inherits and holds the caller's stdout (the SSH exec-channel fd leak). ---
+
+
+def _fake_tmux_that_leaks_stdout(tmp_path, sleep_seconds: float) -> Path:
+    """A stand-in ``tmux`` reproducing the #1170 fd leak: the ``new-session``
+    forks a background 'server' that INHERITS and holds the caller's stdout open
+    for ``sleep_seconds`` (so a pipe read blocks that long), prints a diagnostic
+    to stderr, then the foreground command exits 0."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    tmux = bindir / "tmux"
+    tmux.write_text(
+        "#!/bin/sh\n"
+        f"sleep {sleep_seconds} &\n"       # the 'server' holding inherited fds
+        "echo 'boot diagnostic' >&2\n"     # real tmux-side stderr to preserve
+        "exit 0\n"
+    )
+    tmux.chmod(0o755)
+    return bindir
+
+
+def test_run_tmux_detached_stdio_returns_promptly_and_keeps_stderr(monkeypatch, tmp_path) -> None:
+    # With the child's stdout detached to /dev/null, an inherited server holding
+    # stdout can NOT stall the parent: subprocess never reads a held pipe, so the
+    # foreground new-session exits and _run_tmux returns at once — while tmux's own
+    # stderr is still captured to the temp file for error reporting.
+    import time
+
+    bindir = _fake_tmux_that_leaks_stdout(tmp_path, sleep_seconds=3)
+    monkeypatch.setenv("PATH", f"{bindir}:{__import__('os').environ['PATH']}")
+
+    start = time.monotonic()
+    result = tmux_api._run_tmux(
+        ["new-session", "-d", "-s", "proj"], check=False, detach_child_stdio=True
+    )
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0
+    assert elapsed < 1.5, f"detached create hung {elapsed:.2f}s on the daemon-held fd"
+    assert "boot diagnostic" in result.stderr  # real stderr preserved, not swallowed
+
+
+def test_run_tmux_capture_output_hangs_on_the_held_fd(monkeypatch, tmp_path) -> None:
+    # Control: the OLD path (capture_output=True) DOES block on the held stdout
+    # pipe — proving the fake genuinely reproduces the #1170 leak and that the
+    # detached path above is what fixes it. A short timeout fires because the read
+    # is still parked on the daemon-held pipe.
+    bindir = _fake_tmux_that_leaks_stdout(tmp_path, sleep_seconds=5)
+    monkeypatch.setenv("PATH", f"{bindir}:{__import__('os').environ['PATH']}")
+
+    with pytest.raises(tmux_api.TmuxCommandError):
+        tmux_api._run_tmux(["new-session", "-d", "-s", "proj"], check=False, timeout=1)
+
+
+def test_create_detached_uses_detached_child_stdio(monkeypatch) -> None:
+    # The create-detached verb must route its create through the detached-stdio
+    # path so a freshly-spawned server can never hold the caller's exec channel.
+    monkeypatch.setattr(tmux_api, "session_exists", lambda name: False)
+    monkeypatch.setattr(tmux_api, "ensure_server", lambda: None)
+    monkeypatch.setattr(
+        tmux_api, "_new_session_command",
+        lambda name, cwd, *, flag: ["new-session", "-d", "-s", name],
+    )
+    seen_kwargs: list[dict] = []
+
+    def fake_run_tmux(args, **kwargs):
+        seen_kwargs.append(kwargs)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(tmux_api, "_run_tmux", fake_run_tmux)
+
+    tmux_api.create_detached_session("proj")
+
+    assert seen_kwargs and seen_kwargs[0].get("detach_child_stdio") is True
+
+
 def test_kill_session_stops_scope(monkeypatch) -> None:
     monkeypatch.setattr(tmux_api, "session_exists", lambda session_name: True)
     monkeypatch.setattr(

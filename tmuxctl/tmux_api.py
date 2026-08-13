@@ -5,6 +5,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -34,17 +35,52 @@ def _ensure_tmux() -> None:
 
 
 def _run_tmux(
-    args: list[str], *, check: bool = True, timeout: int | None = None,
+    args: list[str],
+    *,
+    check: bool = True,
+    timeout: int | None = None,
+    detach_child_stdio: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     _ensure_tmux()
     try:
-        result = subprocess.run(
-            ["tmux", *args],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout,
-        )
+        if detach_child_stdio:
+            # Issue #1170 (PocketShell): a `tmux new-session -d` that has to START
+            # the server (no server yet) forks the server as a child. When tmuxctl
+            # is invoked over an SSH exec channel and the server is scope-wrapped
+            # (systemd-run --scope keeps it attached instead of daemonizing), the
+            # server INHERITS this process's stdout/stderr. If those are pipes
+            # (`capture_output=True`), `subprocess.run` blocks reading them until
+            # the *daemon* closes them — which is never — so the create never
+            # returns and the caller (PocketShell's bounded exec read) FALSE-fails
+            # on its timeout even though the session was created. Point the child's
+            # stdin/stdout at /dev/null (so an inherited server holds /dev/null, not
+            # the caller's channel) and capture stderr to a real temp FILE (a file
+            # fd the daemon may inherit harmlessly — subprocess never blocks reading
+            # a pipe). The foreground `new-session -d` exits promptly, so the create
+            # returns at once, WITHOUT losing tmux's real stderr for error reporting.
+            with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as errf:
+                completed = subprocess.run(
+                    ["tmux", *args],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=errf,
+                    text=True,
+                    check=False,
+                    timeout=timeout,
+                )
+                errf.seek(0)
+                stderr = errf.read()
+            result = subprocess.CompletedProcess(
+                completed.args, completed.returncode, "", stderr
+            )
+        else:
+            result = subprocess.run(
+                ["tmux", *args],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout,
+            )
     except subprocess.TimeoutExpired as exc:
         raise TmuxCommandError(
             f"tmux command timed out after {timeout}s: tmux {' '.join(args)}"
@@ -299,7 +335,11 @@ def create_detached_session(
     ensure_server()
     cwd = start_dir or os.getcwd()
     command = _new_session_command(session_name, cwd, flag=mem)
-    result = _run_tmux(command, check=False)
+    # Issue #1170: run the create with the child's stdin/stdout detached from this
+    # process's stdio so a freshly-spawned (scope-wrapped, non-daemonizing) server
+    # cannot inherit and hold the caller's SSH exec channel open — which would make
+    # the caller's bounded output read never reach EOF and FALSE-fail the create.
+    result = _run_tmux(command, check=False, detach_child_stdio=True)
     if result.returncode != 0:
         stderr = (result.stderr or "").strip()
         raise TmuxCommandError(stderr or f"failed to create session '{session_name}'")
