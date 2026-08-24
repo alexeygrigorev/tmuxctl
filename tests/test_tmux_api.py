@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
+import uuid
 from pathlib import Path
 
 import pytest
@@ -624,7 +626,7 @@ def test_session_exists_uses_exact_match(monkeypatch) -> None:
 def test_session_panes_parses_list_panes(monkeypatch) -> None:
     monkeypatch.setattr(tmux_api, "session_exists", lambda name: True)
 
-    stdout = "0\t0\t111\tnvim\t/home/a/proj\t1\n1\t0\t222\tpython\t/home/a/proj/sub\t0\n"
+    stdout = "0::0::111::nvim::/home/a/proj::1\n1::0::222::python::/home/a/proj/sub::0\n"
 
     def fake_run_tmux(args, *, check=True, timeout=None):
         assert args[0] == "list-panes"
@@ -650,6 +652,47 @@ def test_session_panes_requires_existing_session(monkeypatch) -> None:
     except tmux_api.TmuxSessionNotFoundError:
         raised = True
     assert raised
+
+
+def test_list_session_info_parses_list_sessions(monkeypatch) -> None:
+    stdout = "repro::1787570221::1787570300\n"
+
+    def fake_run_tmux(args, *, check=True, timeout=None):
+        assert args[:3] == ["list-sessions", "-F", "#{session_name}::#{session_created}::#{session_activity}"]
+        return subprocess.CompletedProcess(args, 0, stdout, "")
+
+    monkeypatch.setattr(tmux_api, "_run_tmux", fake_run_tmux)
+
+    sessions = tmux_api.list_session_info()
+    assert len(sessions) == 1
+    assert sessions[0].name == "repro"
+    assert sessions[0].created_at == 1787570221
+    assert sessions[0].activity_at == 1787570300
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="requires a real tmux binary")
+def test_list_session_info_and_session_panes_survive_real_tmux(tmp_path) -> None:
+    """Issue #6: tmux rewrites literal tabs in -F output to underscores, so a
+    tab-delimited format silently mangles into one unsplittable field. A
+    synthesised fixture string can't catch that -- the mangling happens
+    inside tmux itself -- so this drives the real binary."""
+    name = f"tmuxctl-issue6-{uuid.uuid4().hex[:8]}"
+    subprocess.run(
+        ["tmux", "new-session", "-d", "-s", name, "-c", str(tmp_path)],
+        check=True,
+    )
+    try:
+        sessions = tmux_api.list_session_info()
+        matches = [s for s in sessions if s.name == name]
+        assert len(matches) == 1
+        assert matches[0].created_at > 0
+        assert matches[0].activity_at > 0
+
+        panes = tmux_api.session_panes(name)
+        assert len(panes) == 1
+        assert panes[0].cwd == str(tmp_path)
+    finally:
+        subprocess.run(["tmux", "kill-session", "-t", name], check=False)
 
 
 def test_process_cgroup_reads_unified_line(monkeypatch, tmp_path) -> None:

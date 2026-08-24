@@ -105,8 +105,13 @@ def list_sessions() -> list[str]:
 
 
 def list_session_info() -> list[SessionInfo]:
+    # tmux rewrites literal tab characters in -F output to underscores (seen on
+    # tmux 3.4 and 3.6b alike -- not a version regression, the tab delimiter
+    # was never safe), so a tab-joined format silently collapses into one
+    # unsplittable field. "::" survives -F output, and tmux session names
+    # forbid ':', so it can't collide with a name (issue #6).
     result = _run_tmux(
-        ["list-sessions", "-F", "#{session_name}\t#{session_created}\t#{session_activity}"],
+        ["list-sessions", "-F", "#{session_name}::#{session_created}::#{session_activity}"],
         check=False,
     )
     if result.returncode != 0:
@@ -119,7 +124,7 @@ def list_session_info() -> list[SessionInfo]:
     for line in result.stdout.splitlines():
         if not line.strip():
             continue
-        name, created_at, activity_at = line.split("\t")
+        name, created_at, activity_at = line.split("::")
         sessions.append(
             SessionInfo(
                 name=name,
@@ -142,8 +147,8 @@ def session_path(session_name: str) -> str | None:
 
 
 _PANE_FORMAT = (
-    "#{window_index}\t#{pane_index}\t#{pane_pid}\t"
-    "#{pane_current_command}\t#{pane_current_path}\t#{pane_active}"
+    "#{window_index}::#{pane_index}::#{pane_pid}::"
+    "#{pane_current_command}::#{pane_current_path}::#{pane_active}"
 )
 
 
@@ -168,7 +173,7 @@ def session_panes(session_name: str) -> list[PaneInfo]:
     for line in result.stdout.splitlines():
         if not line.strip():
             continue
-        parts = line.split("\t")
+        parts = line.split("::")
         if len(parts) < 6:
             continue
         window_index, pane_index, pane_pid, command, cwd, active = parts[:6]
