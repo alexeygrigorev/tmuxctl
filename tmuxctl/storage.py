@@ -4,7 +4,7 @@ import sqlite3
 from datetime import timedelta
 from pathlib import Path
 
-from tmuxctl.models import Job, LogEntry
+from tmuxctl.models import Job, LogEntry, SessionEvent
 from tmuxctl.utils import parse_timestamp, to_timestamp, utcnow
 
 
@@ -57,6 +57,23 @@ def init_db(conn: sqlite3.Connection) -> None:
             error_text TEXT NULL,
             created_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS session_events (
+            id INTEGER PRIMARY KEY,
+            session_name TEXT NOT NULL,
+            event TEXT NOT NULL,
+            start_dir TEXT NULL,
+            mem TEXT NULL,
+            swap TEXT NULL,
+            high TEXT NULL,
+            scope_unit TEXT NULL,
+            socket_path TEXT NULL,
+            server_pid INTEGER NULL,
+            detail TEXT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_events_name
+            ON session_events(session_name, created_at);
         """
     )
     columns = {
@@ -358,6 +375,112 @@ def count_recent_consecutive_failures(conn: sqlite3.Connection, job_id: int) -> 
             break
         failures += 1
     return failures
+
+
+def record_session_event(
+    conn: sqlite3.Connection,
+    session_name: str,
+    event: str,
+    *,
+    start_dir: str | None = None,
+    mem: str | None = None,
+    swap: str | None = None,
+    high: str | None = None,
+    scope_unit: str | None = None,
+    socket_path: str | None = None,
+    server_pid: int | None = None,
+    detail: str | None = None,
+) -> None:
+    """Append a session lifecycle event. Best-effort: never raises, so a
+    locked/corrupt db can never block session creation/teardown."""
+    try:
+        conn.execute(
+            """
+            INSERT INTO session_events (
+                session_name, event, start_dir, mem, swap, high,
+                scope_unit, socket_path, server_pid, detail, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_name,
+                event,
+                start_dir,
+                mem,
+                swap,
+                high,
+                scope_unit,
+                socket_path,
+                server_pid,
+                detail,
+                to_timestamp(utcnow()),
+            ),
+        )
+        conn.commit()
+    except Exception:  # noqa: BLE001 - logging must never block session lifecycle
+        pass
+
+
+def list_session_events(
+    conn: sqlite3.Connection,
+    *,
+    session_name: str | None = None,
+    since: str | None = None,
+    limit: int = 50,
+) -> list[SessionEvent]:
+    query = "SELECT * FROM session_events WHERE 1=1"
+    params: list[object] = []
+    if session_name is not None:
+        query += " AND session_name = ?"
+        params.append(session_name)
+    if since is not None:
+        query += " AND created_at >= ?"
+        params.append(since)
+    query += " ORDER BY created_at DESC, id DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(query, params).fetchall()
+    return [_session_event_from_row(row) for row in rows]
+
+
+def last_session_event(
+    conn: sqlite3.Connection,
+    session_name: str,
+    *,
+    event: str | None = None,
+) -> SessionEvent | None:
+    if event is None:
+        row = conn.execute(
+            """
+            SELECT * FROM session_events WHERE session_name = ?
+            ORDER BY created_at DESC, id DESC LIMIT 1
+            """,
+            (session_name,),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            SELECT * FROM session_events WHERE session_name = ? AND event = ?
+            ORDER BY created_at DESC, id DESC LIMIT 1
+            """,
+            (session_name, event),
+        ).fetchone()
+    return _session_event_from_row(row) if row else None
+
+
+def _session_event_from_row(row: sqlite3.Row) -> SessionEvent:
+    return SessionEvent(
+        id=row["id"],
+        session_name=row["session_name"],
+        event=row["event"],
+        start_dir=row["start_dir"],
+        mem=row["mem"],
+        swap=row["swap"],
+        high=row["high"],
+        scope_unit=row["scope_unit"],
+        socket_path=row["socket_path"],
+        server_pid=row["server_pid"],
+        detail=row["detail"],
+        created_at=row["created_at"],
+    )
 
 
 def compute_next_run(interval_seconds: int) -> str:

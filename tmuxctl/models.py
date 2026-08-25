@@ -34,6 +34,22 @@ class LogEntry:
 
 
 @dataclass(slots=True)
+class SessionEvent:
+    id: int
+    session_name: str
+    event: str
+    start_dir: str | None
+    mem: str | None
+    swap: str | None
+    high: str | None
+    scope_unit: str | None
+    socket_path: str | None
+    server_pid: int | None
+    detail: str | None
+    created_at: str
+
+
+@dataclass(slots=True)
 class SessionInfo:
     name: str
     created_at: int
