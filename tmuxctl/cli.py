@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import sys
+from datetime import timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Annotated
@@ -12,8 +13,8 @@ import typer
 from click.shell_completion import CompletionItem
 from typer.core import TyperGroup
 
-from tmuxctl import robust, scheduler, storage, strays as strays_mod, tmux_api
-from tmuxctl.models import Job, LogEntry, SessionInfo
+from tmuxctl import robust, salvage as salvage_mod, scheduler, storage, strays as strays_mod, tmux_api
+from tmuxctl.models import Job, LogEntry, SessionEvent, SessionInfo
 from tmuxctl.utils import (
     display_timestamp,
     display_unix_timestamp,
@@ -21,6 +22,8 @@ from tmuxctl.utils import (
     format_cpu_time,
     format_interval,
     parse_interval,
+    to_timestamp,
+    utcnow,
 )
 
 ROOT_COMMAND_NAMES = {
@@ -38,6 +41,7 @@ ROOT_COMMAND_NAMES = {
     "k",
     "limit",
     "rename",
+    "sessions-log",
     "attach-last",
     "attach-recent",
     "jobs",
@@ -56,6 +60,7 @@ ROOT_COMMAND_NAMES = {
     "strays",
     "reap",
     "reap-clients",
+    "salvage",
 }
 
 PROGRAM_NAME = "tmuxctl"
@@ -306,6 +311,32 @@ def _print_logs(entries: list[LogEntry]) -> None:
         typer.echo(
             f"{display_timestamp(entry.created_at):<20} {source:<10} {job_id:<4} "
             f"{entry.session_name:<14} {enter:<5} {delay:<6} {entry.status:<8} {error}"
+        )
+
+
+def _print_session_events(entries: list[SessionEvent]) -> None:
+    typer.echo("TIME                 SESSION         EVENT           DETAIL")
+    for entry in entries:
+        detail_parts = []
+        if entry.start_dir:
+            detail_parts.append(f"dir={entry.start_dir}")
+        if entry.mem:
+            detail_parts.append(f"mem={entry.mem}")
+        if entry.swap:
+            detail_parts.append(f"swap={entry.swap}")
+        if entry.high:
+            detail_parts.append(f"high={entry.high}")
+        if entry.scope_unit:
+            detail_parts.append(f"scope={entry.scope_unit}")
+        if entry.socket_path:
+            detail_parts.append(f"socket={entry.socket_path}")
+        if entry.server_pid:
+            detail_parts.append(f"pid={entry.server_pid}")
+        if entry.detail:
+            detail_parts.append(entry.detail)
+        typer.echo(
+            f"{display_timestamp(entry.created_at):<20} {entry.session_name:<15} "
+            f"{entry.event:<15} {' '.join(detail_parts)}"
         )
 
 
@@ -590,6 +621,7 @@ def kill(
         tmux_api.kill_session(session_name)
     except Exception as exc:
         _fail(str(exc))
+    storage.record_session_event(_conn(), session_name, "killed")
     typer.echo(f"Killed session {session_name}")
 
 
@@ -628,6 +660,9 @@ def limit(
         tmux_api.set_session_limits(session_name, mem=mem, swap=swap, high=high)
     except Exception as exc:
         _fail(str(exc))
+    storage.record_session_event(
+        _conn(), session_name, "limit_changed", mem=mem, swap=swap, high=high
+    )
 
     parts = []
     if high is not None:
@@ -667,10 +702,43 @@ def rename(
         session_name=session_name,
         new_session_name=new_name,
     )
+    storage.record_session_event(
+        conn, new_name, "renamed", detail=f"{session_name}->{new_name}"
+    )
     typer.echo(
         f"Renamed session {session_name} to {new_name}"
         f" ({renamed_jobs} job(s) updated)"
     )
+
+
+@app.command("sessions-log")
+def sessions_log(
+    session: Annotated[
+        str | None,
+        typer.Option("--session", help="Only show events for this session name.", autocompletion=_complete_session_names),
+    ] = None,
+    since: Annotated[
+        int | None,
+        typer.Option("--since", help="Only show events from the last N days."),
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", min=1, help="Number of event rows to show.")] = 50,
+) -> None:
+    """Show the durable session lifecycle log (created/killed/renamed/...).
+
+    Survives the process/cgroup dying, so it's the source of truth for
+    recovery even when the live session and its scope are long gone.
+    """
+    since_ts = None
+    if since is not None:
+        since_ts = to_timestamp(utcnow() - timedelta(days=since))
+    conn = _conn()
+    events = storage.list_session_events(
+        conn, session_name=session, since=since_ts, limit=limit
+    )
+    if not events:
+        typer.echo("No session events recorded.")
+        return
+    _print_session_events(events)
 
 
 @app.command("attach-last")
@@ -917,22 +985,47 @@ def jobs_logs(
 def jobs_daemon(
     poll_interval: Annotated[int, typer.Option("--poll-interval", min=1, help="Seconds between job polls.")] = 3,
     run_once: Annotated[bool, typer.Option("--run-once", help="Process due jobs once and exit.")] = False,
+    health_interval: Annotated[
+        int,
+        typer.Option("--health-interval", min=1, help="Seconds between session health checks (§4)."),
+    ] = 60,
+    auto_salvage: Annotated[
+        bool | None,
+        typer.Option(
+            "--auto-salvage/--no-auto-salvage",
+            help="Let the daemon recreate unhealthy sessions itself, not just detect+log them. "
+            "Defaults to the auto_salvage config value (off unless set).",
+        ),
+    ] = None,
 ) -> None:
     """Run the scheduler daemon or process due jobs once."""
     if run_once:
         count = scheduler.run_once()
         typer.echo(f"Processed {count} due job(s)")
         return
-    scheduler.run_daemon(poll_interval=poll_interval)
+    scheduler.run_daemon(
+        poll_interval=poll_interval, health_interval=health_interval, auto_salvage=auto_salvage
+    )
 
 
 @app.command("daemon", hidden=True)
 def daemon_alias(
     poll_interval: Annotated[int, typer.Option("--poll-interval", min=1, help="Seconds between job polls.")] = 3,
     run_once: Annotated[bool, typer.Option("--run-once", help="Process due jobs once and exit.")] = False,
+    health_interval: Annotated[
+        int,
+        typer.Option("--health-interval", min=1, help="Seconds between session health checks (§4)."),
+    ] = 60,
+    auto_salvage: Annotated[
+        bool | None,
+        typer.Option("--auto-salvage/--no-auto-salvage"),
+    ] = None,
 ) -> None:
     """Backward-compatible alias for ``tmuxctl jobs daemon``."""
-    jobs_daemon(poll_interval=poll_interval, run_once=run_once)
+    jobs_daemon(
+        poll_interval=poll_interval, run_once=run_once,
+        health_interval=health_interval, auto_salvage=auto_salvage,
+    )
 
 
 def _run_text(args: list[str]) -> str:
@@ -1007,13 +1100,85 @@ def doctor() -> None:
             )
 
     typer.echo("")
-    typer.echo("== tmux server placement ==")
+    typer.echo("== oversubscription ==")
+    if not robust.systemd_available():
+        typer.echo("(systemd unavailable; cannot sum scope MemoryMax)")
+    else:
+        capacity = robust.system_capacity()
+        reserved = robust.total_reserved_mem()
+        pct_cfg = robust.resolve_oversubscription_max_pct()
+        if capacity <= 0:
+            typer.echo("(could not read /proc/meminfo)")
+        else:
+            pct_used = reserved * 100 // capacity if capacity else 0
+            typer.echo(
+                f"  reserved (sum of scope MemoryMax): {format_bytes(reserved)}  "
+                f"/  capacity (RAM+swap): {format_bytes(capacity)}  "
+                f"= {pct_used}%"
+            )
+            if pct_cfg <= 0:
+                typer.echo("  oversubscription check disabled (oversubscription_max_pct=0)")
+            elif pct_used > pct_cfg:
+                typer.echo(
+                    f"  WARNING: reserved caps exceed the configured "
+                    f"{pct_cfg}% threshold — lower some sessions' --mem or "
+                    "raise oversubscription_max_pct if this is intentional."
+                )
+            else:
+                typer.echo(f"  ok: under the configured {pct_cfg}% threshold")
+
+    typer.echo("")
+    typer.echo("== pty durability (§1, dtach) ==")
+    dtach_wrap_on = robust.resolve_dtach_wrap()
+    dtach_installed = robust.dtach_available()
+    if dtach_wrap_on and dtach_installed:
+        typer.echo("  enabled and installed — new sessions' initial pane survives their server dying")
+    elif dtach_wrap_on and not dtach_installed:
+        typer.echo(
+            "  WARNING: dtach_wrap is enabled but 'dtach' is not installed — "
+            "sessions run without pty durability (install: apt install dtach)"
+        )
+    else:
+        typer.echo("  disabled (dtach_wrap=false) — a session's foreground process dies with its server")
+
+    typer.echo("")
+    typer.echo("== per-session servers (§0) ==")
+    if not robust.systemd_available():
+        typer.echo("(systemd unavailable)")
+    else:
+        try:
+            live = tmux_api.list_sessions()
+        except Exception:
+            live = []
+        if not live:
+            typer.echo("(no live sessions)")
+        for name in live:
+            socket = tmux_api.locate_session(name)
+            if socket == robust.socket_for(name):
+                unit = f"{robust.session_server_unit(name)}.service"
+                result = subprocess.run(
+                    ["systemctl", "--user", "is-active", unit],
+                    capture_output=True, text=True, check=False,
+                )
+                state = (result.stdout or "").strip() or "unknown"
+                typer.echo(f"  {name:<24} own server ({unit}, {state})")
+            elif socket is not None:
+                typer.echo(
+                    f"  {name:<24} LEGACY: still on the shared default socket — "
+                    "run 'tmuxctl kill' + recreate (or 'tmuxctl salvage --recreate' "
+                    "once available) to migrate it to its own server"
+                )
+            else:
+                typer.echo(f"  {name:<24} (socket not found — reap/list may be stale)")
+
+    typer.echo("")
+    typer.echo("== legacy shared server placement ==")
     if not robust.systemd_available():
         typer.echo("(systemd unavailable)")
     else:
         pid = tmux_api.server_pid()
         if pid is None:
-            typer.echo("(no tmux server running)")
+            typer.echo("(no legacy shared server running)")
         else:
             cgroup = tmux_api.process_cgroup(pid) or "?"
             login_scoped = (
@@ -1460,6 +1625,86 @@ def reap_clients(
     if not yes:
         typer.echo("")
         typer.echo("Dry-run. Re-run with --yes to detach.")
+
+
+def _print_salvage_report(report: salvage_mod.SalvageReport) -> None:
+    typer.echo("SESSION                    STATUS                DETAIL")
+    if not report.entries:
+        typer.echo("(nothing found — no scopes, no live sessions, no log history)")
+        return
+    for entry in sorted(report.entries, key=lambda e: e.session_name):
+        typer.echo(f"{entry.session_name:<26} {entry.status:<21} {entry.detail}")
+        if entry.reattach_command:
+            typer.echo(f"{'':<26} {'':<21} -> {entry.reattach_command}")
+
+
+@app.command()
+def salvage(
+    recreate: Annotated[
+        bool,
+        typer.Option("--recreate", help="Recreate every 'gone'/'stale-work' session from the log/orphan cwd."),
+    ] = False,
+    kill_dead_cwd: Annotated[
+        bool,
+        typer.Option("--kill-dead-cwd", help="Kill 'stale-work' processes whose cwd no longer exists on disk."),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", help="Actually kill for --kill-dead-cwd (otherwise dry-run)."),
+    ] = False,
+) -> None:
+    """Post-crash recovery: for each session, reattach directly or recreate it.
+
+    One-command version of what a crash recovery required by hand before
+    this existed: for every ``tmuxctl-*.scope``, is there something live to
+    reattach to (§0's own server, or §1's surviving dtach master), or
+    something that needs recreating (consulting the durable session log,
+    §2, before guessing from the session name)?
+    """
+    conn = _conn()
+    report = salvage_mod.scan(conn)
+    _print_salvage_report(report)
+
+    if kill_dead_cwd:
+        dead = [
+            e for e in report.entries
+            if e.status == "stale-work" and e.pid is not None
+            and (e.cwd is None or not os.path.exists(e.cwd))
+        ]
+        if not dead:
+            typer.echo("")
+            typer.echo("No stale-work processes with a deleted cwd to kill.")
+        else:
+            typer.echo("")
+            action = "Killing" if yes else "Would kill"
+            for entry in dead:
+                typer.echo(f"{action} {entry.session_name}: pid {entry.pid} (cwd deleted)")
+                if yes:
+                    try:
+                        os.kill(entry.pid, 9)
+                    except OSError as exc:
+                        typer.echo(f"  (failed: {exc})")
+            if not yes:
+                typer.echo("Dry-run. Re-run with --yes to actually kill.")
+
+    if recreate:
+        typer.echo("")
+        for entry in report.entries:
+            if entry.status in ("healthy", "reattachable", "reattachable-dtach"):
+                continue
+            if entry.status == "needs-manual-reclaim":
+                typer.echo(
+                    f"SKIP {entry.session_name}: needs-manual-reclaim — {entry.detail}"
+                )
+                continue
+            # status in ("gone", "stale-work"): safe to recreate.
+            try:
+                tmux_api.create_detached_session(
+                    entry.session_name, start_dir=entry.cwd, mem=entry.mem
+                )
+                typer.echo(f"Recreated {entry.session_name} at {entry.cwd or '(cwd)'}")
+            except Exception as exc:
+                typer.echo(f"FAILED to recreate {entry.session_name}: {exc}")
 
 
 app.add_typer(jobs_app, name="jobs")
