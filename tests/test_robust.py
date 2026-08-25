@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -559,3 +560,224 @@ def test_scope_property_reads_value(monkeypatch) -> None:
 
     monkeypatch.setattr(robust.subprocess, "run", fake_run)
     assert robust.scope_property("tmuxctl-proj", "MemoryMax") == "5368709120"
+
+
+# ---------------------------------------------------------------------------
+# §0: per-session tmux servers
+# ---------------------------------------------------------------------------
+def test_socket_for_is_deterministic_and_uid_scoped(monkeypatch) -> None:
+    monkeypatch.delenv("TMUX_TMPDIR", raising=False)
+    assert robust.socket_for("git-foo", uid=1000) == "/tmp/tmux-1000/tmuxctl-git-foo"
+    # Pure function: same input, same output, no side effects.
+    assert robust.socket_for("git-foo", uid=1000) == robust.socket_for("git-foo", uid=1000)
+
+
+def test_socket_for_honors_tmux_tmpdir(monkeypatch) -> None:
+    monkeypatch.setenv("TMUX_TMPDIR", "/custom")
+    assert robust.socket_for("proj", uid=1000) == "/custom/tmux-1000/tmuxctl-proj"
+
+
+def test_socket_for_rejects_paths_too_long_for_af_unix(monkeypatch) -> None:
+    monkeypatch.delenv("TMUX_TMPDIR", raising=False)
+    with pytest.raises(ValueError, match="too long"):
+        robust.socket_for("x" * 100, uid=1000)
+
+
+def test_session_server_unit_name() -> None:
+    assert robust.session_server_unit("proj") == "tmuxctl-server-proj"
+
+
+def test_session_server_bootstrap_argv_shape(monkeypatch) -> None:
+    monkeypatch.delenv("TMUX_TMPDIR", raising=False)
+    tmux_argv = ["new-session", "-d", "-s", "proj"]
+    argv = robust.session_server_bootstrap_argv("proj", tmux_argv)
+
+    assert argv[:3] == ["systemd-run", "--user", "--unit=tmuxctl-server-proj"]
+    assert "Type=forking" in argv
+    assert f"Slice={robust.server_slice_name()}" in argv
+    assert "OOMScoreAdjust=-900" in argv
+    # Ends with: tmux -S <this session's socket> <the tmux_argv verbatim>.
+    assert argv[-len(tmux_argv) - 3:] == ["tmux", "-S", robust.socket_for("proj"), *tmux_argv]
+
+
+def test_reset_session_server_unit_targets_the_service(monkeypatch) -> None:
+    monkeypatch.setattr(robust, "systemd_available", lambda: True)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        robust.subprocess, "run",
+        lambda args, **k: calls.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
+    )
+    robust.reset_session_server_unit("proj")
+    assert calls == [
+        ["systemctl", "--user", "stop", "tmuxctl-server-proj.service"],
+        ["systemctl", "--user", "reset-failed", "tmuxctl-server-proj.service"],
+    ]
+
+
+def test_stop_session_server_invokes_systemctl(monkeypatch) -> None:
+    monkeypatch.setattr(robust, "systemd_available", lambda: True)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        robust.subprocess, "run",
+        lambda args, **k: calls.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
+    )
+    robust.stop_session_server("proj")
+    assert calls == [["systemctl", "--user", "stop", "tmuxctl-server-proj.service"]]
+
+
+def test_stop_session_server_noop_without_systemd(monkeypatch) -> None:
+    monkeypatch.setattr(robust, "systemd_available", lambda: False)
+    called = []
+    monkeypatch.setattr(robust.subprocess, "run", lambda *a, **k: called.append(a))
+    robust.stop_session_server("proj")
+    assert called == []
+
+
+# ---------------------------------------------------------------------------
+# §3: oversubscription guard
+# ---------------------------------------------------------------------------
+def test_total_swap_bytes(tmp_path) -> None:
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal:  16314084 kB\nSwapTotal:  8388604 kB\n", encoding="utf-8")
+    assert robust.total_swap_bytes(str(meminfo)) == 8388604 * 1024
+
+
+def test_system_capacity_sums_ram_and_swap(tmp_path) -> None:
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal:  1000 kB\nSwapTotal:  500 kB\n", encoding="utf-8")
+    assert robust.system_capacity(str(meminfo)) == 1500 * 1024
+
+
+def test_resolve_oversubscription_max_pct_env_wins() -> None:
+    assert robust.resolve_oversubscription_max_pct(env={"ROBUST_TMUX_OVERSUBSCRIPTION_MAX_PCT": "50"}) == 50
+
+
+def test_resolve_oversubscription_max_pct_config_beats_default() -> None:
+    assert robust.resolve_oversubscription_max_pct(
+        env={}, user_config={"oversubscription_max_pct": "0"}
+    ) == 0
+
+
+def test_resolve_oversubscription_max_pct_default() -> None:
+    assert robust.resolve_oversubscription_max_pct(env={}, user_config={}) == 120
+
+
+def test_total_reserved_mem_sums_scope_units(monkeypatch) -> None:
+    monkeypatch.setattr(robust, "systemd_available", lambda: True)
+
+    def fake_run(args, **kwargs):
+        if args[:3] == ["systemctl", "--user", "list-units"]:
+            return subprocess.CompletedProcess(
+                args, 0,
+                "tmuxctl-a.scope loaded active running Session a\n"
+                "tmuxctl-b.scope loaded active running Session b\n",
+                "",
+            )
+        if "MemoryMax" in args:
+            scope = args[3]
+            value = "5368709120" if scope == "tmuxctl-a.scope" else "infinity"
+            return subprocess.CompletedProcess(args, 0, value, "")
+        return subprocess.CompletedProcess(args, 1, "", "")
+
+    monkeypatch.setattr(robust.subprocess, "run", fake_run)
+    # Only the numeric scope counts; "infinity" (uncapped) contributes 0.
+    assert robust.total_reserved_mem() == 5368709120
+
+
+def test_total_reserved_mem_zero_without_systemd(monkeypatch) -> None:
+    monkeypatch.setattr(robust, "systemd_available", lambda: False)
+    assert robust.total_reserved_mem() == 0
+
+
+# ---------------------------------------------------------------------------
+# §1: pty-durable pane wrapping (dtach)
+# ---------------------------------------------------------------------------
+def test_resolve_dtach_wrap_env_wins() -> None:
+    assert robust.resolve_dtach_wrap(env={"ROBUST_TMUX_DTACH_WRAP": "true"}) is True
+    assert robust.resolve_dtach_wrap(env={"ROBUST_TMUX_DTACH_WRAP": "0"}) is False
+
+
+def test_resolve_dtach_wrap_config_beats_default() -> None:
+    assert robust.resolve_dtach_wrap(env={}, user_config={"dtach_wrap": "yes"}) is True
+
+
+def test_resolve_dtach_wrap_defaults_off() -> None:
+    assert robust.resolve_dtach_wrap(env={}, user_config={}) is False
+
+
+def test_dtach_available_checks_path(monkeypatch) -> None:
+    monkeypatch.setattr(robust.shutil, "which", lambda name: "/usr/bin/dtach" if name == "dtach" else None)
+    assert robust.dtach_available() is True
+    monkeypatch.setattr(robust.shutil, "which", lambda name: None)
+    assert robust.dtach_available() is False
+
+
+def test_dtach_socket_for_creates_directory(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    socket = robust.dtach_socket_for("proj")
+    assert socket == tmp_path / "tmuxctl" / "dtach" / "proj-0.sock"
+    assert socket.parent.is_dir()
+
+
+def test_dtach_wrap_builds_expected_argv(tmp_path) -> None:
+    socket = tmp_path / "proj-0.sock"
+    argv = robust.dtach_wrap(["/bin/bash", "-l"], socket)
+    assert argv == ["dtach", "-A", str(socket), "-E", "-z", "-r", "winch", "--", "/bin/bash", "-l"]
+
+
+def test_dtach_attach_argv() -> None:
+    socket = Path("/tmp/x.sock")
+    assert robust.dtach_attach_argv(socket) == ["dtach", "-a", "/tmp/x.sock"]
+
+
+def test_scope_occupied_only_by_dtach_true_when_all_pids_are_dtach(monkeypatch) -> None:
+    monkeypatch.setattr(robust, "scope_cgroup_path", lambda unit: "/robust.slice/tmuxctl-proj.scope")
+    monkeypatch.setattr(robust, "cgroup_proc_pids", lambda cgroup: [111, 222])
+    monkeypatch.setattr(robust, "proc_comm", lambda pid: "dtach")
+    assert robust.scope_occupied_only_by_dtach("tmuxctl-proj") is True
+
+
+def test_scope_occupied_only_by_dtach_false_with_foreign_process(monkeypatch) -> None:
+    monkeypatch.setattr(robust, "scope_cgroup_path", lambda unit: "/robust.slice/tmuxctl-proj.scope")
+    monkeypatch.setattr(robust, "cgroup_proc_pids", lambda cgroup: [111, 222])
+    monkeypatch.setattr(robust, "proc_comm", lambda pid: "dtach" if pid == 111 else "python")
+    assert robust.scope_occupied_only_by_dtach("tmuxctl-proj") is False
+
+
+def test_scope_occupied_only_by_dtach_false_when_empty(monkeypatch) -> None:
+    monkeypatch.setattr(robust, "scope_cgroup_path", lambda unit: "/robust.slice/tmuxctl-proj.scope")
+    monkeypatch.setattr(robust, "cgroup_proc_pids", lambda cgroup: [])
+    assert robust.scope_occupied_only_by_dtach("tmuxctl-proj") is False
+
+
+def test_scope_occupied_only_by_dtach_false_without_cgroup(monkeypatch) -> None:
+    monkeypatch.setattr(robust, "scope_cgroup_path", lambda unit: None)
+    assert robust.scope_occupied_only_by_dtach("tmuxctl-proj") is False
+
+
+def test_cgroup_proc_pids_reads_procs_file(tmp_path, monkeypatch) -> None:
+    cgroup_root = tmp_path / "sys_fs_cgroup"
+    (cgroup_root / "robust.slice" / "tmuxctl-proj.scope").mkdir(parents=True)
+    procs = cgroup_root / "robust.slice" / "tmuxctl-proj.scope" / "cgroup.procs"
+    procs.write_text("111\n222\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        robust, "Path", lambda p: cgroup_root if p == "/sys/fs/cgroup" else Path(p)
+    )
+    assert robust.cgroup_proc_pids("/robust.slice/tmuxctl-proj.scope") == [111, 222]
+
+
+def test_proc_comm_reads_comm_file(tmp_path, monkeypatch) -> None:
+    comm_file = tmp_path / "comm"
+    comm_file.write_text("dtach\n", encoding="utf-8")
+    monkeypatch.setattr(
+        robust, "Path", lambda p: comm_file if p == "/proc/999/comm" else Path(p)
+    )
+    assert robust.proc_comm(999) == "dtach"
+
+
+def test_proc_comm_none_when_unreadable(monkeypatch) -> None:
+    monkeypatch.setattr(
+        robust, "Path", lambda p: Path("/nonexistent/does/not/exist")
+    )
+    assert robust.proc_comm(999) is None

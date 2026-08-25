@@ -31,6 +31,10 @@ else:  # Python 3.10: tomllib is not in the stdlib
 DEFAULT_MEM = "12G"
 DEFAULT_RESERVE = "8G"
 DEFAULT_SWAP = "8G"
+# Summed MemoryMax across every session scope may exceed system capacity by
+# this much before a warning fires (some oversubscription is fine since
+# sessions rarely all peak at once). 0 disables the check.
+DEFAULT_OVERSUBSCRIPTION_MAX_PCT = 120
 # MemoryHigh defaults to this fraction of MemoryMax: the kernel reclaims and
 # throttles allocations above MemoryHigh, only hard-killing at MemoryMax, so a
 # scope slows down and waits under transient pressure instead of OOM-dying.
@@ -116,13 +120,121 @@ def scope_unit_name(session_name: str) -> str:
 
 
 def server_unit_name() -> str:
-    """The systemd unit base name owning the shared tmux server (no suffix)."""
+    """The systemd unit base name owning the shared tmux server (no suffix).
+
+    Legacy: only pre-migration sessions still on the shared default socket
+    run under this unit. New sessions bootstrap their own dedicated server
+    via :func:`session_server_unit` instead — see "Per-session tmux
+    servers" in docs/oom-recovery-plan.md.
+    """
     return _SERVER_UNIT
 
 
 def server_slice_name() -> str:
-    """The uncapped systemd user slice that owns the shared tmux server."""
+    """The uncapped systemd user slice that owns tmux server processes.
+
+    Shared by the legacy server unit and every per-session server unit —
+    it's just the "servers live here, uncapped" slice, not itself a
+    correlated-failure risk (a slice has no process of its own to kill).
+    """
     return _SERVER_SLICE_NAME
+
+
+def socket_name(session_name: str) -> str:
+    """The ``-L``-style socket basename for a session's own dedicated server."""
+    return f"tmuxctl-{session_name}"
+
+
+def socket_for(session_name: str, uid: int | None = None) -> str:
+    """Deterministic path to a session's own dedicated tmux socket.
+
+    Lands under the same directory ``strays.list_socket_paths()`` already
+    scans (``$TMUX_TMPDIR|/tmp/tmux-<uid>/``), so no scanner changes are
+    needed to see per-session sockets. A pure function of the session name:
+    no directory creation, no XDG fallback, nothing to keep in sync.
+    """
+    uid = os.getuid() if uid is None else uid
+    tmpdir = os.environ.get("TMUX_TMPDIR") or "/tmp"
+    path = f"{tmpdir}/tmux-{uid}/{socket_name(session_name)}"
+    # AF_UNIX sun_path is capped at 108 bytes on Linux; fail loudly rather
+    # than silently truncating to a wrong/colliding socket path.
+    if len(path.encode()) >= 108:
+        raise ValueError(f"socket path too long for AF_UNIX (>=108 bytes): {path!r}")
+    return path
+
+
+def session_server_unit(session_name: str) -> str:
+    """The systemd unit base name for a session's own dedicated tmux server."""
+    return f"tmuxctl-server-{session_name}"
+
+
+def session_server_bootstrap_argv(session_name: str, tmux_argv: list[str]) -> list[str]:
+    """Argv that starts a session's OWN tmux server, in its own persistent
+    systemd unit, immediately running ``tmux_argv`` (typically a
+    ``new-session -d ...``) on that session's dedicated socket.
+
+    Unlike the legacy shared-server bootstrap, this collapses "start the
+    server" and "create the session" into one step: each per-session server
+    exists for exactly one session, so there's no separate empty-server
+    keepalive dance (``exit-empty`` stays at its default "on" — the server
+    exits on its own once that one session ends, and systemd notices the
+    cgroup went empty and reaps the unit). ``OOMScoreAdjust`` keeps this
+    session's own workload pressure from picking the multiplexer over the
+    workload it's multiplexing, same rationale as the legacy server bootstrap
+    — just scoped down to one session so a crash is contained to it alone.
+    """
+    unit = session_server_unit(session_name)
+    return [
+        "systemd-run",
+        "--user",
+        f"--unit={unit}",
+        "-p",
+        "Type=forking",
+        "-p",
+        f"Slice={_SERVER_SLICE_NAME}",
+        "-p",
+        f"OOMScoreAdjust={_SERVER_OOM_SCORE_ADJUST}",
+        "--quiet",
+        "--",
+        "tmux",
+        "-S",
+        socket_for(session_name),
+        *tmux_argv,
+    ]
+
+
+def reset_session_server_unit(session_name: str) -> None:
+    """Free a dead per-session server unit so it can be re-bootstrapped.
+
+    See :func:`_reset_unit`: a crashed per-session server can leave its
+    unit ``failed``, which would make ``systemd-run --unit=`` refuse the
+    name on the next create for that same session name.
+    """
+    _reset_unit(f"{session_server_unit(session_name)}.service")
+
+
+def stop_session_server(session_name: str) -> None:
+    """Best-effort stop of a session's dedicated server unit. Errors ignored.
+
+    Usually a no-op by the time this runs: ``exit-empty`` already exits the
+    server (and its now-empty cgroup lets systemd reap the unit on its own)
+    the moment ``kill_session`` ends that session. Explicit stop just makes
+    teardown immediate instead of racing that natural exit, and is harmless
+    to call for a legacy (pre-migration, shared-server) session, where the
+    unit never existed in the first place.
+    """
+    if not systemd_available():
+        return
+    unit = f"{session_server_unit(session_name)}.service"
+    try:
+        subprocess.run(
+            ["systemctl", "--user", "stop", unit],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, FileNotFoundError):
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +252,25 @@ def total_ram_bytes(meminfo_path: str = "/proc/meminfo") -> int:
     except (OSError, ValueError, IndexError):
         pass
     return 0
+
+
+def total_swap_bytes(meminfo_path: str = "/proc/meminfo") -> int:
+    """Read ``SwapTotal`` from /proc/meminfo (kB) and return bytes."""
+    try:
+        with open(meminfo_path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("SwapTotal:"):
+                    parts = line.split()
+                    return int(parts[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
+def system_capacity(meminfo_path: str = "/proc/meminfo") -> int:
+    """Physical RAM + swap: the ceiling aggregate session memory caps should
+    stay within, with headroom (see :func:`resolve_oversubscription_max_pct`)."""
+    return total_ram_bytes(meminfo_path) + total_swap_bytes(meminfo_path)
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +299,9 @@ def read_user_config(path: Path | None = None) -> dict[str, str]:
         "slice_max",
         "slice_swap_max",
         "reserve",
+        "oversubscription_max_pct",
+        "dtach_wrap",
+        "auto_salvage",
     ):
         if key in data and data[key] is not None:
             result[key] = str(data[key])
@@ -381,6 +515,129 @@ def resolve_high(
         return value
 
     return default_high_for(mem)
+
+
+def resolve_oversubscription_max_pct(
+    *,
+    env: dict[str, str] | None = None,
+    user_config: dict[str, str] | None = None,
+) -> int:
+    """Resolve the oversubscription warning threshold, as % of system capacity.
+
+    Precedence: env var ``ROBUST_TMUX_OVERSUBSCRIPTION_MAX_PCT`` -> user config
+    ``oversubscription_max_pct`` -> built-in default (120). ``0`` disables the
+    check entirely.
+    """
+    env = os.environ if env is None else env
+
+    env_value = env.get("ROBUST_TMUX_OVERSUBSCRIPTION_MAX_PCT")
+    if env_value is not None:
+        return int(env_value)
+
+    cfg = read_user_config() if user_config is None else user_config
+    if cfg.get("oversubscription_max_pct") is not None:
+        return int(cfg["oversubscription_max_pct"])
+
+    return DEFAULT_OVERSUBSCRIPTION_MAX_PCT
+
+
+def total_reserved_mem() -> int:
+    """Sum of ``MemoryMax`` across every live ``tmuxctl-*.scope`` unit, bytes.
+
+    Enumerates systemd units directly rather than live tmux sessions, so a
+    scope whose tmux process already died (but whose cgroup/unit is still
+    around) still counts — exactly the case an oversubscription total must
+    not silently drop. Unset/``infinity`` caps are skipped (uncapped
+    fallback sessions don't reserve anything, which is itself the signal
+    ``doctor`` and creation-time warnings should surface separately).
+    """
+    if not systemd_available():
+        return 0
+    try:
+        result = subprocess.run(
+            [
+                "systemctl", "--user", "list-units", "tmuxctl-*.scope",
+                "--all", "--no-legend", "--plain",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, FileNotFoundError):
+        return 0
+    if result.returncode != 0:
+        return 0
+
+    total = 0
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        unit = line.split()[0]
+        if not unit.endswith(".scope"):
+            continue
+        raw = scope_property(unit, "MemoryMax")
+        if raw in (None, "", "[not set]", "infinity"):
+            continue
+        try:
+            total += int(raw)
+        except ValueError:
+            continue
+    return total
+
+
+def resolve_dtach_wrap(
+    *,
+    env: dict[str, str] | None = None,
+    user_config: dict[str, str] | None = None,
+) -> bool:
+    """Resolve whether new sessions get pty-durable dtach wrapping (§1).
+
+    Opt-in, default off: flip it on (globally via config, or per-invocation
+    via the env var) once you've prototyped it against a real session --
+    see docs/oom-recovery-plan.md, §1's "Scope note". Precedence: env var
+    ``ROBUST_TMUX_DTACH_WRAP`` -> user config ``dtach_wrap`` -> off.
+    """
+    env = os.environ if env is None else env
+    truthy = {"1", "true", "yes", "on"}
+
+    env_value = env.get("ROBUST_TMUX_DTACH_WRAP")
+    if env_value is not None:
+        return env_value.strip().lower() in truthy
+
+    cfg = read_user_config() if user_config is None else user_config
+    if cfg.get("dtach_wrap") is not None:
+        return str(cfg["dtach_wrap"]).strip().lower() in truthy
+
+    return False
+
+
+def resolve_auto_salvage(
+    *,
+    env: dict[str, str] | None = None,
+    user_config: dict[str, str] | None = None,
+) -> bool:
+    """Resolve whether the daemon health check (§4) is allowed to actually
+    recreate an unhealthy session on its own, versus only detecting and
+    logging it for a human to run ``tmuxctl salvage --recreate``.
+
+    Opt-in, default off: automatic recreation is a materially bigger blast
+    radius than the old shared-server's idempotent ``ensure_server()``
+    no-op, so it needs an explicit choice to trust. Precedence: env var
+    ``ROBUST_TMUX_AUTO_SALVAGE`` -> user config ``auto_salvage`` -> off.
+    """
+    env = os.environ if env is None else env
+    truthy = {"1", "true", "yes", "on"}
+
+    env_value = env.get("ROBUST_TMUX_AUTO_SALVAGE")
+    if env_value is not None:
+        return env_value.strip().lower() in truthy
+
+    cfg = read_user_config() if user_config is None else user_config
+    if cfg.get("auto_salvage") is not None:
+        return str(cfg["auto_salvage"]).strip().lower() in truthy
+
+    return False
 
 
 def resolve_slice_max(
@@ -686,3 +943,105 @@ def scope_property(unit: str, prop: str) -> str | None:
         return None
     value = result.stdout.strip()
     return value or None
+
+
+# ---------------------------------------------------------------------------
+# Pty-durable pane wrapping (§1: dtach)
+# ---------------------------------------------------------------------------
+# §0 contains a session's crash to itself; it does not stop that session's
+# OWN tmux server from dying (its own workload can still hit its own cap, or
+# anything else can kill that one process). dtach moves the pty one hop
+# below tmux: the real command runs behind a tiny dtach master that is a
+# SIBLING of the tmux server, not its descendant, so the server dying never
+# signals it. Opt-in (see resolve_dtach_wrap) -- prototype against one real
+# session before trusting it as the default for every session.
+
+
+def dtach_available() -> bool:
+    """True when ``dtach`` is on PATH. Degrades gracefully when absent: the
+    caller falls back to the bare (non-durable) shell, same philosophy as
+    every other optional protection layer in this module."""
+    return shutil.which("dtach") is not None
+
+
+def dtach_socket_dir() -> Path:
+    base = os.environ.get("XDG_RUNTIME_DIR")
+    if base:
+        return Path(base) / "tmuxctl" / "dtach"
+    return Path.home() / ".local" / "state" / "tmuxctl" / "dtach"
+
+
+def dtach_socket_for(session_name: str, pane_id: str = "0") -> Path:
+    """Deterministic path to a pane's durable dtach socket.
+
+    This is the layer that outlives the tmux server: the process behind it
+    keeps running whether or not anything is attached, and whether or not
+    the tmux server that originally spawned it is still alive. ``pane_id``
+    distinguishes panes/windows beyond a session's initial one (not yet
+    wired up by default -- see docs/oom-recovery-plan.md §1's note on
+    default-command wrapping for interactively-created panes/windows).
+    """
+    directory = dtach_socket_dir()
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return directory / f"{session_name}-{pane_id}.sock"
+
+
+def dtach_wrap(cmd: list[str], socket: Path) -> list[str]:
+    """Wrap ``cmd`` so it runs behind a durable dtach master.
+
+    ``-E`` disables dtach's own detach hotkey (otherwise it steals ``^\\``),
+    ``-z`` disables its suspend key, ``-r winch`` forces a repaint on
+    attach so the pane isn't blank until the app redraws on its own (apps
+    that handle SIGWINCH -- ``claude``, vim, most TUIs -- redraw
+    immediately; a bare shell prompt looks blank until Enter, which is
+    expected).
+    """
+    return ["dtach", "-A", str(socket), "-E", "-z", "-r", "winch", "--", *cmd]
+
+
+def dtach_attach_argv(socket: Path) -> list[str]:
+    """Reattach to an already-running dtach master (the post-crash recreate
+    case: the tmux server died, this session's dtach master didn't)."""
+    return ["dtach", "-a", str(socket)]
+
+
+def scope_cgroup_path(unit: str) -> str | None:
+    """The cgroup v2 path systemd reports owning a scope's live processes."""
+    return scope_property(unit, "ControlGroup")
+
+
+def cgroup_proc_pids(cgroup_path: str) -> list[int]:
+    """Live PIDs in a cgroup v2 path, as systemd's ``ControlGroup`` reports it."""
+    if not cgroup_path.startswith("/"):
+        return []
+    path = Path("/sys/fs/cgroup") / cgroup_path.lstrip("/") / "cgroup.procs"
+    try:
+        return [int(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    except (OSError, ValueError):
+        return []
+
+
+def proc_comm(pid: int) -> str | None:
+    """The command name (``comm``) of a process, or None if unreadable/gone."""
+    try:
+        return Path(f"/proc/{pid}/comm").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+
+def scope_occupied_only_by_dtach(unit: str) -> bool:
+    """True when an 'active' scope's only live processes are dtach masters.
+
+    Distinguishes the expected §1 post-crash recreate case (this session's
+    own dtach master survived its tmux server dying, so the scope is still
+    "active" by design) from genuine squatting by a foreign/unexpected
+    occupant, which :func:`tmux_api._new_session_command` must still hard
+    -stop rather than silently reclaim.
+    """
+    cgroup = scope_cgroup_path(unit if unit.endswith(".scope") else f"{unit}.scope")
+    if not cgroup:
+        return False
+    pids = cgroup_proc_pids(cgroup)
+    if not pids:
+        return False
+    return all(proc_comm(pid) == "dtach" for pid in pids)
