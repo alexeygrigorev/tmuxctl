@@ -33,12 +33,12 @@ def test_attach_session_can_resize_window(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     monkeypatch.delenv("TMUX", raising=False)
-    monkeypatch.setattr(tmux_api, "session_exists", lambda session_name: True)
+    monkeypatch.setattr(tmux_api, "locate_session", lambda name: "/tmp/tmux-1000/tmuxctl-git-llm-zoomcamp")
 
-    def fake_run_tmux(args, *, check=True, timeout=10):
+    def fake_run_tmux(args, *, socket=None, check=True, timeout=None):
         captured["args"] = args
+        captured["socket"] = socket
         captured["check"] = check
-        captured["timeout"] = timeout
         return subprocess.CompletedProcess(args, 0, "", "")
 
     monkeypatch.setattr(tmux_api, "_run_tmux", fake_run_tmux)
@@ -53,6 +53,7 @@ def test_attach_session_can_resize_window(monkeypatch) -> None:
         "resize-window",
         "-A",
     ]
+    assert captured["socket"] == "/tmp/tmux-1000/tmuxctl-git-llm-zoomcamp"
     assert captured["check"] is False
 
 
@@ -60,34 +61,39 @@ def test_attach_session_can_resize_window_inside_tmux(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     monkeypatch.setenv("TMUX", "/tmp/tmux")
-    monkeypatch.setattr(tmux_api, "session_exists", lambda session_name: True)
+    monkeypatch.setattr(tmux_api, "locate_session", lambda name: "/tmp/tmux-1000/tmuxctl-git-llm-zoomcamp")
 
-    def fake_run_tmux(args, *, check=True, timeout=10):
+    def fake_run_tmux(args, *, socket=None, check=True, timeout=None):
         captured["args"] = args
+        captured["socket"] = socket
         return subprocess.CompletedProcess(args, 0, "", "")
 
     monkeypatch.setattr(tmux_api, "_run_tmux", fake_run_tmux)
 
     tmux_api.attach_session("git-llm-zoomcamp", resize_window=True)
 
+    # switch-client can't cross servers post-§0 (every session is its own
+    # server), so an inside-tmux attach hands the client off via
+    # detach-client -E instead, targeting the OTHER server explicitly.
     assert captured["args"] == [
-        "switch-client",
-        "-t",
-        "git-llm-zoomcamp",
-        ";",
-        "resize-window",
-        "-A",
+        "detach-client",
+        "-E",
+        "tmux -S /tmp/tmux-1000/tmuxctl-git-llm-zoomcamp attach-session -t "
+        "git-llm-zoomcamp ';' resize-window -A",
     ]
+    # No socket= for this call: $TMUX must resolve the CURRENT server.
+    assert captured["socket"] is None
 
 
 def test_create_or_attach_runs_command_only_when_creating(monkeypatch) -> None:
     captured: list[list[str]] = []
 
     monkeypatch.delenv("TMUX", raising=False)
-    session_exists_results = iter([False, True, True])
-    monkeypatch.setattr(tmux_api, "session_exists", lambda session_name: next(session_exists_results))
+    socket = robust.socket_for("git-workshops")
+    locate_results = iter([None, socket, socket])
+    monkeypatch.setattr(tmux_api, "locate_session", lambda name: next(locate_results))
 
-    def fake_run_tmux(args, *, check=True, timeout=10):
+    def fake_run_tmux(args, **k):
         captured.append(args)
         return subprocess.CompletedProcess(args, 0, "", "")
 
@@ -108,10 +114,11 @@ def test_create_or_attach_preserves_create_command_quoting(monkeypatch) -> None:
     captured: list[list[str]] = []
 
     monkeypatch.delenv("TMUX", raising=False)
-    session_exists_results = iter([False, True, True])
-    monkeypatch.setattr(tmux_api, "session_exists", lambda session_name: next(session_exists_results))
+    socket = robust.socket_for("git-workshops")
+    locate_results = iter([None, socket, socket])
+    monkeypatch.setattr(tmux_api, "locate_session", lambda name: next(locate_results))
 
-    def fake_run_tmux(args, *, check=True, timeout=10):
+    def fake_run_tmux(args, **k):
         captured.append(args)
         return subprocess.CompletedProcess(args, 0, "", "")
 
@@ -151,8 +158,8 @@ def test_create_or_attach_wraps_shell_in_scope_when_systemd(monkeypatch) -> None
     captured: list[list[str]] = []
 
     monkeypatch.delenv("TMUX", raising=False)
-    session_exists_results = iter([False, True])
-    monkeypatch.setattr(tmux_api, "session_exists", lambda session_name: next(session_exists_results))
+    locate_results = iter([None, robust.socket_for("proj")])
+    monkeypatch.setattr(tmux_api, "locate_session", lambda name: next(locate_results))
     monkeypatch.setattr(tmux_api, "attach_session", lambda *a, **k: None)
 
     # Deterministic systemd-available path.
@@ -167,34 +174,38 @@ def test_create_or_attach_wraps_shell_in_scope_when_systemd(monkeypatch) -> None
         "ensure_slice",
         lambda slice_max, *, swap_max=None: ensured.append((slice_max, swap_max)) or True,
     )
-    monkeypatch.setattr(tmux_api, "_login_shell", lambda: ["/bin/bash", "-l"])
+    monkeypatch.setattr(tmux_api, "_login_shell", lambda session_name: ["/bin/bash", "-l"])
     monkeypatch.setattr(tmux_api.os, "getcwd", lambda: "/home/me/proj")
     _no_stale_scope(monkeypatch)
+    monkeypatch.setattr(robust, "reset_session_server_unit", lambda name: None)
 
-    def fake_run_tmux(args, *, check=True, timeout=10):
+    def fake_subprocess_run(args, **k):
         captured.append(args)
         return subprocess.CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr(tmux_api, "_run_tmux", fake_run_tmux)
-    monkeypatch.setattr(tmux_api, "ensure_server", lambda: None)
+    monkeypatch.setattr(tmux_api.subprocess, "run", fake_subprocess_run)
 
     tmux_api.create_or_attach_session("proj")
 
-    create_cmd = captured[0]
-    assert create_cmd[:6] == ["new-session", "-d", "-s", "proj", "-c", "/home/me/proj"]
-    # The wrapped login shell follows, built by robust.scope_wrap.
-    assert create_cmd[6:] == robust.scope_wrap(
-        ["/bin/bash", "-l"], "tmuxctl-proj", "7G", swap="2G"
-    )
-    assert "systemd-run" in create_cmd
+    # The whole create is now a single bootstrap: this session's OWN server,
+    # started in its own systemd unit, immediately running the (still
+    # scope-wrapped) new-session command on its own dedicated socket.
+    # (`captured` may also hold an unrelated real `git rev-parse` call made
+    # by the unmocked resolve_high()'s project-config lookup -- find the
+    # actual bootstrap by its argv[0] rather than assuming call order.)
+    bootstrap_cmd = next(c for c in captured if c[:1] == ["systemd-run"])
+    assert bootstrap_cmd[:3] == ["systemd-run", "--user", "--unit=tmuxctl-server-proj"]
+    wrapped = robust.scope_wrap(["/bin/bash", "-l"], "tmuxctl-proj", "7G", swap="2G")
+    tmux_argv = ["new-session", "-d", "-s", "proj", "-c", "/home/me/proj", *wrapped]
+    assert bootstrap_cmd[-len(tmux_argv):] == tmux_argv
     assert ensured == [("40G", "12G")]
 
 
 def _scope_wrap_systemd(monkeypatch, captured: list[list[str]]) -> None:
     """Deterministic capped-creation path shared by the stale-scope tests."""
     monkeypatch.delenv("TMUX", raising=False)
-    session_exists_results = iter([False, True])
-    monkeypatch.setattr(tmux_api, "session_exists", lambda session_name: next(session_exists_results))
+    locate_results = iter([None, robust.socket_for("proj")])
+    monkeypatch.setattr(tmux_api, "locate_session", lambda name: next(locate_results))
     monkeypatch.setattr(tmux_api, "attach_session", lambda *a, **k: None)
     monkeypatch.setattr(robust, "systemd_available", lambda: True)
     monkeypatch.setattr(robust, "resolve_mem", lambda *, flag=None, cwd=None: "7G")
@@ -202,13 +213,13 @@ def _scope_wrap_systemd(monkeypatch, captured: list[list[str]]) -> None:
     monkeypatch.setattr(robust, "resolve_slice_max", lambda: "40G")
     monkeypatch.setattr(robust, "resolve_slice_swap_max", lambda: "12G")
     monkeypatch.setattr(robust, "ensure_slice", lambda slice_max, *, swap_max=None: True)
-    monkeypatch.setattr(tmux_api, "_login_shell", lambda: ["/bin/bash", "-l"])
+    monkeypatch.setattr(tmux_api, "_login_shell", lambda session_name: ["/bin/bash", "-l"])
     monkeypatch.setattr(tmux_api.os, "getcwd", lambda: "/home/me/proj")
+    monkeypatch.setattr(robust, "reset_session_server_unit", lambda name: None)
     monkeypatch.setattr(
-        tmux_api, "_run_tmux",
+        tmux_api.subprocess, "run",
         lambda args, **k: captured.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
     )
-    monkeypatch.setattr(tmux_api, "ensure_server", lambda: None)
 
 
 def test_create_falls_back_to_uncapped_when_scope_still_active(monkeypatch) -> None:
@@ -226,9 +237,12 @@ def test_create_falls_back_to_uncapped_when_scope_still_active(monkeypatch) -> N
 
     tmux_api.create_or_attach_session("proj")
 
-    # Plain (uncapped) new-session, no systemd-run wrapping, no destructive reset.
-    assert captured[0] == ["new-session", "-d", "-s", "proj", "-c", "/home/me/proj"]
-    assert "systemd-run" not in captured[0]
+    # The session's own server still gets its protective bootstrap, but the
+    # tmux command it runs is plain (uncapped) -- no systemd-run wrapping of
+    # the pane shell, and no destructive reset of the still-live scope.
+    bootstrap_cmd = captured[0]
+    assert bootstrap_cmd[-6:] == ["new-session", "-d", "-s", "proj", "-c", "/home/me/proj"]
+    assert bootstrap_cmd.count("systemd-run") == 1  # only the server bootstrap itself
     assert reset_calls == []
 
 
@@ -247,8 +261,98 @@ def test_create_reaps_dead_scope_then_caps(monkeypatch) -> None:
     tmux_api.create_or_attach_session("proj")
 
     assert reset_calls == ["tmuxctl-proj"]
-    assert captured[0][:6] == ["new-session", "-d", "-s", "proj", "-c", "/home/me/proj"]
-    assert "systemd-run" in captured[0]
+    bootstrap_cmd = next(c for c in captured if c[:1] == ["systemd-run"])
+    wrapped = robust.scope_wrap(["/bin/bash", "-l"], "tmuxctl-proj", "7G", swap="2G")
+    tmux_argv = ["new-session", "-d", "-s", "proj", "-c", "/home/me/proj", *wrapped]
+    assert bootstrap_cmd[-len(tmux_argv):] == tmux_argv
+    # Twice: once for the server bootstrap itself, once nested for the
+    # scope-wrapped (capped) pane shell it launches.
+    assert bootstrap_cmd.count("systemd-run") == 2
+
+
+# ---------------------------------------------------------------------------
+# §1: pty-durable pane wrapping (dtach)
+# ---------------------------------------------------------------------------
+def test_login_shell_plain_when_dtach_disabled(monkeypatch) -> None:
+    monkeypatch.setattr(robust, "resolve_dtach_wrap", lambda: False)
+    monkeypatch.setattr(robust, "dtach_available", lambda: True)
+    monkeypatch.setattr(tmux_api.os.environ, "get", lambda k, default=None: "/bin/zsh" if k == "SHELL" else default)
+    assert tmux_api._login_shell("proj") == ["/bin/zsh", "-l"]
+
+
+def test_login_shell_plain_when_dtach_not_installed(monkeypatch) -> None:
+    monkeypatch.setattr(robust, "resolve_dtach_wrap", lambda: True)
+    monkeypatch.setattr(robust, "dtach_available", lambda: False)
+    monkeypatch.setattr(tmux_api.os.environ, "get", lambda k, default=None: "/bin/zsh" if k == "SHELL" else default)
+    assert tmux_api._login_shell("proj") == ["/bin/zsh", "-l"]
+
+
+def test_login_shell_wraps_in_dtach_when_enabled(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(robust, "resolve_dtach_wrap", lambda: True)
+    monkeypatch.setattr(robust, "dtach_available", lambda: True)
+    monkeypatch.setattr(robust, "dtach_socket_for", lambda name, pane_id="0": tmp_path / f"{name}.sock")
+    monkeypatch.setattr(tmux_api.os.environ, "get", lambda k, default=None: "/bin/zsh" if k == "SHELL" else default)
+
+    result = tmux_api._login_shell("proj")
+
+    assert result == robust.dtach_wrap(["/bin/zsh", "-l"], tmp_path / "proj.sock")
+    assert result[0] == "dtach"
+
+
+def test_new_session_command_reattaches_to_surviving_dtach_master(monkeypatch) -> None:
+    # The scope is "active" (a dtach master from a previous, now-dead tmux
+    # server is still running in it) -- with dtach wrapping on, this must
+    # reattach into the EXISTING scope, not hard-fall-back to uncapped like
+    # genuine squatting would.
+    monkeypatch.setattr(robust, "systemd_available", lambda: True)
+    monkeypatch.setattr(tmux_api, "_resolve_session_mem", lambda cwd, flag=None: "7G")
+    monkeypatch.setattr(tmux_api, "_resolve_session_swap", lambda cwd: "2G")
+    monkeypatch.setattr(
+        robust, "scope_properties",
+        lambda unit, props: (
+            {"ActiveState": "active", "LoadState": "loaded"}
+            if set(props) == {"ActiveState", "LoadState"}
+            else {"MemoryMax": "7516192768", "MemorySwapMax": "2147483648", "MemoryHigh": "6442450944"}
+        ),
+    )
+    monkeypatch.setattr(robust, "resolve_dtach_wrap", lambda: True)
+    monkeypatch.setattr(robust, "scope_occupied_only_by_dtach", lambda unit: True)
+    monkeypatch.setattr(robust, "dtach_socket_for", lambda name, pane_id="0": Path(f"/run/tmuxctl/dtach/{name}.sock"))
+    reset_calls: list[str] = []
+    monkeypatch.setattr(robust, "reset_scope", lambda unit: reset_calls.append(unit))
+
+    argv, resolved = tmux_api._new_session_command("proj", "/home/me/proj", flag=None)
+
+    assert argv == [
+        "new-session", "-d", "-s", "proj", "-c", "/home/me/proj",
+        "dtach", "-a", "/run/tmuxctl/dtach/proj.sock",
+    ]
+    assert resolved == {
+        "mem": "7516192768", "swap": "2147483648", "high": "6442450944",
+        "scope_unit": "tmuxctl-proj.scope",
+    }
+    # Never treated as squatting: no destructive reset, no uncapped fallback.
+    assert reset_calls == []
+
+
+def test_new_session_command_still_falls_back_for_foreign_squatter(monkeypatch, capsys) -> None:
+    # Same "active" scope, but dtach wrapping is on AND the occupant is NOT
+    # purely dtach masters -- must still hard-fall-back like before §1.
+    monkeypatch.setattr(robust, "systemd_available", lambda: True)
+    monkeypatch.setattr(tmux_api, "_resolve_session_mem", lambda cwd, flag=None: "7G")
+    monkeypatch.setattr(tmux_api, "_resolve_session_swap", lambda cwd: "2G")
+    monkeypatch.setattr(
+        robust, "scope_properties",
+        lambda unit, props: {"ActiveState": "active", "LoadState": "loaded"},
+    )
+    monkeypatch.setattr(robust, "resolve_dtach_wrap", lambda: True)
+    monkeypatch.setattr(robust, "scope_occupied_only_by_dtach", lambda unit: False)
+
+    argv, resolved = tmux_api._new_session_command("proj", "/home/me/proj", flag=None)
+
+    assert argv == ["new-session", "-d", "-s", "proj", "-c", "/home/me/proj"]
+    assert resolved == {"mem": None, "swap": None, "high": None, "scope_unit": None}
+    assert "still has live processes" in capsys.readouterr().err
 
 
 def test_create_detached_is_noop_when_session_exists(monkeypatch) -> None:
@@ -297,22 +401,20 @@ def test_create_detached_wraps_scope_and_honors_start_dir(monkeypatch) -> None:
     monkeypatch.setattr(robust, "resolve_slice_max", lambda: "40G")
     monkeypatch.setattr(robust, "resolve_slice_swap_max", lambda: "12G")
     monkeypatch.setattr(robust, "ensure_slice", lambda slice_max, *, swap_max=None: True)
-    monkeypatch.setattr(tmux_api, "_login_shell", lambda: ["/bin/bash", "-l"])
+    monkeypatch.setattr(tmux_api, "_login_shell", lambda session_name: ["/bin/bash", "-l"])
     _no_stale_scope(monkeypatch)
+    monkeypatch.setattr(robust, "reset_session_server_unit", lambda name: None)
     monkeypatch.setattr(
-        tmux_api, "_run_tmux",
+        tmux_api.subprocess, "run",
         lambda args, **k: captured.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
     )
 
-    monkeypatch.setattr(tmux_api, "ensure_server", lambda: None)
     tmux_api.create_detached_session("proj", start_dir="/repo")
 
-    create_cmd = captured[0]
-    assert create_cmd[:6] == ["new-session", "-d", "-s", "proj", "-c", "/repo"]
-    assert create_cmd[6:] == robust.scope_wrap(
-        ["/bin/bash", "-l"], "tmuxctl-proj", "30G", swap="6G"
-    )
-    assert "systemd-run" in create_cmd
+    bootstrap_cmd = next(c for c in captured if c[:1] == ["systemd-run"])
+    wrapped = robust.scope_wrap(["/bin/bash", "-l"], "tmuxctl-proj", "30G", swap="6G")
+    tmux_argv = ["new-session", "-d", "-s", "proj", "-c", "/repo", *wrapped]
+    assert bootstrap_cmd[-len(tmux_argv):] == tmux_argv
     # mem resolved against the start_dir, so the repo's cgroups.toml policy wins.
     assert seen_cwd == [(None, Path("/repo"))]
 
@@ -325,20 +427,20 @@ def test_create_detached_flag_overrides_mem(monkeypatch) -> None:
     monkeypatch.setattr(robust, "resolve_slice_max", lambda: "40G")
     monkeypatch.setattr(robust, "resolve_slice_swap_max", lambda: "12G")
     monkeypatch.setattr(robust, "ensure_slice", lambda slice_max, *, swap_max=None: True)
-    monkeypatch.setattr(tmux_api, "_login_shell", lambda: ["/bin/bash", "-l"])
+    monkeypatch.setattr(tmux_api, "_login_shell", lambda session_name: ["/bin/bash", "-l"])
     monkeypatch.setattr(tmux_api.os, "getcwd", lambda: "/work/dir")
     _no_stale_scope(monkeypatch)
+    monkeypatch.setattr(robust, "reset_session_server_unit", lambda name: None)
     monkeypatch.setattr(
-        tmux_api, "_run_tmux",
+        tmux_api.subprocess, "run",
         lambda args, **k: captured.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
     )
 
-    monkeypatch.setattr(tmux_api, "ensure_server", lambda: None)
     tmux_api.create_detached_session("proj", mem="8G")
 
-    assert captured[0][6:] == robust.scope_wrap(
-        ["/bin/bash", "-l"], "tmuxctl-proj", "8G", swap="6G"
-    )
+    bootstrap_cmd = next(c for c in captured if c[:1] == ["systemd-run"])
+    wrapped = robust.scope_wrap(["/bin/bash", "-l"], "tmuxctl-proj", "8G", swap="6G")
+    assert bootstrap_cmd[-len(wrapped):] == wrapped
 
 
 def test_server_running_true_on_empty_server(monkeypatch) -> None:
@@ -428,24 +530,28 @@ def test_ensure_server_warns_when_bootstrap_fails(monkeypatch, capsys) -> None:
     assert "unit already loaded" in err
 
 
-def test_create_detached_ensures_server_before_creating(monkeypatch) -> None:
+def test_create_detached_resets_stale_server_unit_before_bootstrapping(monkeypatch) -> None:
     order: list[str] = []
     monkeypatch.setattr(tmux_api, "session_exists", lambda name: False)
-    monkeypatch.setattr(tmux_api, "ensure_server", lambda: order.append("ensure_server"))
+    monkeypatch.setattr(robust, "systemd_available", lambda: True)
     monkeypatch.setattr(
         tmux_api, "_new_session_command",
-        lambda name, cwd, *, flag: ["new-session", "-d", "-s", name],
+        lambda name, cwd, *, flag: (["new-session", "-d", "-s", name], {}),
     )
     monkeypatch.setattr(
-        tmux_api, "_run_tmux",
-        lambda args, **k: order.append("new-session") or subprocess.CompletedProcess(args, 0, "", ""),
+        robust, "reset_session_server_unit",
+        lambda name: order.append("reset"),
+    )
+    monkeypatch.setattr(
+        tmux_api.subprocess, "run",
+        lambda args, **k: order.append("bootstrap") or subprocess.CompletedProcess(args, 0, "", ""),
     )
 
     tmux_api.create_detached_session("proj")
 
-    # The server must be in its safe unit BEFORE the first session is created,
-    # otherwise that session spawns the server inside the caller's login scope.
-    assert order == ["ensure_server", "new-session"]
+    # A dead leftover per-session server unit is reaped BEFORE the bootstrap
+    # reuses the name, exactly like the legacy shared-server path.
+    assert order == ["reset", "bootstrap"]
 
 
 # --- Issue #1170: create-detached must not hang when the spawned server ---
@@ -506,11 +612,13 @@ def test_run_tmux_capture_output_hangs_on_the_held_fd(monkeypatch, tmp_path) -> 
 def test_create_detached_uses_detached_child_stdio(monkeypatch) -> None:
     # The create-detached verb must route its create through the detached-stdio
     # path so a freshly-spawned server can never hold the caller's exec channel.
+    # (No systemd here: that's the branch that forks tmux directly instead of
+    # going through systemd-run, which is what issue #1170 was about.)
     monkeypatch.setattr(tmux_api, "session_exists", lambda name: False)
-    monkeypatch.setattr(tmux_api, "ensure_server", lambda: None)
+    monkeypatch.setattr(robust, "systemd_available", lambda: False)
     monkeypatch.setattr(
         tmux_api, "_new_session_command",
-        lambda name, cwd, *, flag: ["new-session", "-d", "-s", name],
+        lambda name, cwd, *, flag: (["new-session", "-d", "-s", name], {}),
     )
     seen_kwargs: list[dict] = []
 
@@ -526,7 +634,7 @@ def test_create_detached_uses_detached_child_stdio(monkeypatch) -> None:
 
 
 def test_kill_session_stops_scope(monkeypatch) -> None:
-    monkeypatch.setattr(tmux_api, "session_exists", lambda session_name: True)
+    monkeypatch.setattr(tmux_api, "locate_session", lambda name: robust.socket_for("proj"))
     monkeypatch.setattr(
         tmux_api, "_run_tmux",
         lambda args, **k: subprocess.CompletedProcess(args, 0, "", ""),
@@ -534,10 +642,17 @@ def test_kill_session_stops_scope(monkeypatch) -> None:
 
     stopped: list[str] = []
     monkeypatch.setattr(robust, "stop_scope", lambda unit: stopped.append(unit))
+    stopped_servers: list[str] = []
+    monkeypatch.setattr(
+        robust, "stop_session_server", lambda name: stopped_servers.append(name)
+    )
 
     tmux_api.kill_session("proj")
 
     assert stopped == ["tmuxctl-proj"]
+    # The session's own dedicated server unit is stopped too (best-effort;
+    # harmless no-op for a legacy shared-server session that never had one).
+    assert stopped_servers == ["proj"]
 
 
 def test_set_session_limits_updates_scope_properties(monkeypatch) -> None:
@@ -611,8 +726,9 @@ def test_set_session_limits_reports_systemctl_failure(monkeypatch) -> None:
 def test_session_exists_uses_exact_match(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
-    def fake_run_tmux(args, *, check=True, timeout=None):
+    def fake_run_tmux(args, *, socket=None, check=True, timeout=None):
         captured["args"] = args
+        captured["socket"] = socket
         return subprocess.CompletedProcess(args, 0, "", "")
 
     monkeypatch.setattr(tmux_api, "_run_tmux", fake_run_tmux)
@@ -621,16 +737,22 @@ def test_session_exists_uses_exact_match(monkeypatch) -> None:
     # Leading '=' forces an exact match so a prefix like "git-pocketshell"
     # never matches an existing "git-pocketshell-desktop".
     assert captured["args"] == ["has-session", "-t", "=git-pocketshell"]
+    # Resolved against this session's own dedicated socket first (§0).
+    assert captured["socket"] == robust.socket_for("git-pocketshell")
 
 
 def test_session_panes_parses_list_panes(monkeypatch) -> None:
-    monkeypatch.setattr(tmux_api, "session_exists", lambda name: True)
+    monkeypatch.setattr(tmux_api, "locate_session", lambda name: robust.socket_for("proj"))
 
-    stdout = "0::0::111::nvim::/home/a/proj::1\n1::0::222::python::/home/a/proj/sub::0\n"
+    stdout = (
+        "0::0::111::nvim::/home/a/proj::1\n"
+        "1::0::222::python::/home/a/proj/sub::0\n"
+    )
 
-    def fake_run_tmux(args, *, check=True, timeout=None):
+    def fake_run_tmux(args, *, socket=None, check=True, timeout=None):
         assert args[0] == "list-panes"
         assert "-s" in args
+        assert socket == robust.socket_for("proj")
         return subprocess.CompletedProcess(args, 0, stdout, "")
 
     monkeypatch.setattr(tmux_api, "_run_tmux", fake_run_tmux)
@@ -645,7 +767,7 @@ def test_session_panes_parses_list_panes(monkeypatch) -> None:
 
 
 def test_session_panes_requires_existing_session(monkeypatch) -> None:
-    monkeypatch.setattr(tmux_api, "session_exists", lambda name: False)
+    monkeypatch.setattr(tmux_api, "locate_session", lambda name: None)
     raised = False
     try:
         tmux_api.session_panes("ghost")
@@ -656,9 +778,12 @@ def test_session_panes_requires_existing_session(monkeypatch) -> None:
 
 def test_list_session_info_parses_list_sessions(monkeypatch) -> None:
     stdout = "repro::1787570221::1787570300\n"
+    monkeypatch.setattr(tmux_api, "_tmuxctl_socket_paths", lambda: ["/tmp/tmux-1000/default"])
 
-    def fake_run_tmux(args, *, check=True, timeout=None):
-        assert args[:3] == ["list-sessions", "-F", "#{session_name}::#{session_created}::#{session_activity}"]
+    def fake_run_tmux(args, *, socket=None, check=True, timeout=None):
+        assert args[:3] == [
+            "list-sessions", "-F", "#{session_name}::#{session_created}::#{session_activity}",
+        ]
         return subprocess.CompletedProcess(args, 0, stdout, "")
 
     monkeypatch.setattr(tmux_api, "_run_tmux", fake_run_tmux)
@@ -675,7 +800,9 @@ def test_list_session_info_and_session_panes_survive_real_tmux(tmp_path) -> None
     """Issue #6: tmux rewrites literal tabs in -F output to underscores, so a
     tab-delimited format silently mangles into one unsplittable field. A
     synthesised fixture string can't catch that -- the mangling happens
-    inside tmux itself -- so this drives the real binary."""
+    inside tmux itself -- so this drives the real binary. Also exercises §0:
+    a plain session with no -S/-L lands on the legacy default socket, which
+    list_session_info()/session_panes() must still find via their fallback."""
     name = f"tmuxctl-issue6-{uuid.uuid4().hex[:8]}"
     subprocess.run(
         ["tmux", "new-session", "-d", "-s", name, "-c", str(tmp_path)],
