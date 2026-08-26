@@ -116,7 +116,7 @@ pub struct SessionArgs {
     pub scrollback_bytes: usize,
 
     /// Command and arguments. Omit to start $SHELL -l.
-    #[arg(last = true, trailing_var_arg = true)]
+    #[arg(last = true)]
     pub command: Vec<String>,
 }
 
