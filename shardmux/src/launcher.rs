@@ -19,9 +19,9 @@ pub fn launch(registry: &Registry, record: &SessionRecord) -> Result<()> {
         LauncherKind::Systemd => launch_systemd(registry, record)?,
         LauncherKind::Direct => launch_direct(registry, record)?,
     }
-    wait_until_ready(record).or_else(|error| {
+    wait_until_ready(record).map_err(|error| {
         let diagnostics = diagnostics(registry, record);
-        Err(error.context(diagnostics))
+        error.context(diagnostics)
     })
 }
 
