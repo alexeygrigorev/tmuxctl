@@ -1,10 +1,9 @@
 # tmuxctl
 
-`tmuxctl` is a small tmux workflow helper for three things:
-
-- finding the session you want
-- jumping to it quickly
-- sending recurring follow-ups to long-running agent or worker sessions
+`tmuxctl` is a small tmux workflow helper. You use it to find the session you
+want and jump to it quickly. It also keeps each session isolated so one crash
+can't take down the rest, and it sends recurring follow-ups to long-running
+agent or worker sessions.
 
 It installs two executables:
 
@@ -35,9 +34,7 @@ tmuxctl
 t
 ```
 
-## Core Workflow
-
-### 1. Find the session you want
+## Find the session you want
 
 Show all sessions, sorted by recency, with numeric IDs:
 
@@ -69,7 +66,7 @@ t r
 t recent --limit 10
 ```
 
-### 2. Jump into a session
+## Jump into a session
 
 Attach by name:
 
@@ -77,7 +74,7 @@ Attach by name:
 t codex
 ```
 
-That is equivalent to:
+That's equivalent to:
 
 ```bash
 t attach codex
@@ -106,7 +103,12 @@ Attach to the newest session directly:
 t attach-last
 ```
 
-### 3. Create a session if it does not exist
+If you're already inside tmux, attach still works across sessions. Each
+session now has its own tmux server, so `t other-session` detaches your
+client and attaches it to that server instead of running `switch-client` on
+a shared one.
+
+## Create a session if it does not exist
 
 Use a leading colon when you want create-or-attach behavior:
 
@@ -120,7 +122,7 @@ That resolves to:
 t create-or-attach codex
 ```
 
-Rule of thumb:
+The two forms mean different things:
 
 - `t codex` means attach only
 - `t :codex` means create or attach
@@ -157,80 +159,95 @@ That resolves to:
 t create-or-attach git-workshops-asd
 ```
 
-#### Create without attaching
+## Create without attaching
 
 `t create-detached` brings a memory-capped session into existence and returns
-immediately, without occupying your terminal. It is for tools that attach over
-their own transport (e.g. tmux `-CC` control mode) and would otherwise build raw,
-uncapped `new-session` commands:
+immediately, without occupying your terminal. Tools that attach over their own
+transport (for example tmux `-CC` control mode) need this, because they would
+otherwise build raw, uncapped `new-session` commands.
 
 ```bash
 t create-detached myproj -c ~/git/myproj
 ```
 
-It is idempotent (a no-op if the session already exists), resolves the memory cap
-the same way as the other verbs (`--mem` flag → project `cgroups.toml` /
-`pyproject [tool.tmuxctl]` → default), and prints the session name on success.
+It's a no-op if the session already exists. It resolves the memory cap the
+same way as the other verbs (`--mem` flag, then project `cgroups.toml` /
+`pyproject [tool.tmuxctl]`, then the default) and prints the session name on
+success.
 
-#### Memory, throttle, and swap limits
+## Isolation: one server per session
 
-tmux has one server process that owns all sessions. If one pane starts a
-runaway build, test VM, emulator, or agent process and the machine runs out of
-RAM, the kernel can kill that shared tmux server. When that happens, every tmux
-session disappears, including unrelated work.
+tmux used to have one server process that owned every session. If that process
+died, every pane disappeared at the same time, including unrelated work.
 
-tmuxctl avoids that by keeping the shared tmux server in its own uncapped user
-service/slice and starting each new session's login shell through
-`systemd-run --user --scope`:
+tmuxctl no longer shares a server. Each new session gets its own tmux server,
+its own socket, and its own systemd unit. A crash in one session has no path
+to the others.
 
 ```text
-tmuxctl-server.slice
-└── tmuxctl-server.service
-    └── tmux server
+tmuxctl-server.slice                          (uncapped, protected)
+├── tmuxctl-server-project-a.service
+│   └── tmux -S /tmp/tmux-<uid>/tmuxctl-project-a
+└── tmuxctl-server-project-b.service
+    └── tmux -S /tmp/tmux-<uid>/tmuxctl-project-b
 
-robust.slice
+robust.slice                                  (capped parent for session work)
 ├── tmuxctl-project-a.scope  MemoryHigh=10.2G MemoryMax=12G MemorySwapMax=8G
+│   └── login shell (+ optional dtach) + commands from that session
 └── tmuxctl-project-b.scope  MemoryHigh=20.4G MemoryMax=24G MemorySwapMax=8G
+    └── login shell (+ optional dtach) + commands from that session
 ```
 
-`tmuxctl-server` isn't a replacement for tmux. It's the systemd user service
-that starts and owns the normal shared tmux server process. tmuxctl starts that
-server in `tmuxctl-server.slice` so it doesn't inherit an SSH login cgroup and
-doesn't sit inside the capped workload slice. That matters because tmux has one
-server per socket: if the server dies, every session on that socket disappears.
+We keep two units per session on purpose:
 
-The tmux server stays outside those per-session scopes and outside the capped
-`robust.slice` parent. Commands launched from a pane inherit the cgroup of that
-session's shell, so memory accounting covers the whole process tree for that
-session. As a scope crosses its soft
-`MemoryHigh` threshold the kernel throttles it and reclaims pages (spilling cold
-ones to swap), so heavy work **slows down and waits** under transient pressure.
-Only if it still climbs to the hard `MemoryMax` does systemd/kernel OOM handling
-kill processes inside that scope — and even then the pressure stays contained
-instead of spilling into the shared tmux server and unrelated sessions.
+- `tmuxctl-server-<name>.service` holds only the multiplexer. It lives in
+  `tmuxctl-server.slice`, has `OOMScoreAdjust=-900`, and has no memory cap.
+- `tmuxctl-<name>.scope` holds the login shell and everything you launch
+  from a pane, and it lives in `robust.slice` with `MemoryHigh`,
+  `MemoryMax`, and `MemorySwapMax`.
+
+Commands launched from a pane inherit the cgroup of that session's shell, so
+memory accounting covers the whole process tree. When a scope crosses its
+soft `MemoryHigh` threshold, the kernel throttles it and reclaims pages
+(spilling cold ones to swap). Heavy work then slows down and waits under
+transient pressure. Only if it still climbs to the hard `MemoryMax` does
+systemd or the kernel kill processes inside that scope.
+
+Sessions created before this change stay on the old shared socket until you
+kill and recreate them. `t doctor` labels those as `LEGACY`. Recreate with
+`t kill <name>` then `t :<name>`, or with `t salvage --recreate` after a
+crash.
 
 The actual create command is shaped like this:
 
 ```bash
-tmux new-session -d -s my-session -c /repo \
-  systemd-run --user --scope \
-    --unit=tmuxctl-my-session \
-    -p MemoryHigh=25.5G \
-    -p MemoryMax=30G \
-    -p MemorySwapMax=8G \
-    -p Slice=robust.slice \
-    --quiet -- \
-    /bin/bash -l
+systemd-run --user --unit=tmuxctl-server-my-session \
+  -p Type=forking \
+  -p Slice=tmuxctl-server.slice \
+  -p OOMScoreAdjust=-900 \
+  --quiet -- \
+  tmux -S /tmp/tmux-<uid>/tmuxctl-my-session \
+    new-session -d -s my-session -c /repo \
+      systemd-run --user --scope \
+        --unit=tmuxctl-my-session \
+        -p MemoryHigh=25.5G \
+        -p MemoryMax=30G \
+        -p MemorySwapMax=8G \
+        -p Slice=robust.slice \
+        --quiet -- \
+        /bin/bash -l
 ```
 
-See [docs/cgroups.md](docs/cgroups.md) for a more detailed explanation of
-systemd, slices, scopes, the exact launch command, and how limits apply.
+See [docs/cgroups.md](docs/cgroups.md) for slices, scopes, and how the
+memory limits apply.
+
+## Memory, throttle, and swap limits
 
 By default, new sessions get `MemoryMax=12G`, `MemorySwapMax=8G`, and
-`MemoryHigh` at 85% of `MemoryMax`. The memory cap protects the tmux server from
-runaway work; `MemoryHigh` makes a session throttle/reclaim before that hard
-wall; and the swap allowance gives it room to spill cold pages so a transient
-spike survives instead of going straight to an OOM kill.
+`MemoryHigh` at 85% of `MemoryMax`. The memory cap contains a runaway
+workload inside that session. `MemoryHigh` makes it throttle and reclaim
+before the hard wall. The swap allowance lets a transient spike spill cold
+pages so it survives instead of going straight to an OOM kill.
 
 Set per-user defaults in `~/.config/tmuxctl/cgroups.toml`:
 
@@ -240,6 +257,9 @@ default_swap = "8G"
 default_high = "20G"   # optional; omit to use 85% of mem
 slice_max = "56G"
 slice_swap_max = "16G"
+oversubscription_max_pct = 120
+dtach_wrap = false
+auto_salvage = false
 ```
 
 Set per-project defaults in either `cgroups.toml`:
@@ -269,6 +289,11 @@ t :my-session --mem 30G
 t create-detached my-session --mem 30G
 ```
 
+If the new cap would push the sum of every live scope's `MemoryMax` past
+`oversubscription_max_pct` of RAM+swap (default 120%), create still
+succeeds, but tmuxctl prints a warning. `t doctor` shows the same total.
+Set `oversubscription_max_pct = 0` to disable the check.
+
 For an existing tmuxctl-created session, change the live systemd scope with
 `limit`:
 
@@ -284,10 +309,30 @@ Under the hood, this updates the session's systemd scope:
 systemctl --user set-property tmuxctl-my-session.scope MemoryHigh=24G MemoryMax=30G MemorySwapMax=8G
 ```
 
-Live changes are not written back to config. Use `~/.config/tmuxctl/cgroups.toml`
+Live changes aren't written back to config. Use `~/.config/tmuxctl/cgroups.toml`
 or project config when you want future sessions to start with those limits.
 
-### 4. Send a one-off message
+## Survive this session's own server dying
+
+A per-session server stops one session from killing another. It doesn't
+stop this session's own server from dying if its workload blows the cap.
+When that happens, tmux owns the pty, so whatever is running in the pane
+(an unattended agent, a long test run) dies with it.
+
+Opt in to wrapping the initial pane behind `dtach`, so that process keeps
+running even if this session's tmux server exits:
+
+```toml
+# ~/.config/tmuxctl/cgroups.toml
+dtach_wrap = true
+```
+
+This requires `dtach` on `PATH` (`apt install dtach`), and if the flag is on
+and `dtach` is missing, the session starts as a normal shell and `t doctor`
+warns. Only the session's first pane is wrapped, and panes you create later
+inside tmux aren't.
+
+## Send a one-off message
 
 Send text directly:
 
@@ -301,16 +346,16 @@ Or send from a file:
 t send rk-codex --message-file prompts/rk-codex-progress.txt
 ```
 
-By default, `send` waits `200ms` before pressing Enter. You can change that:
+By default, `send` waits `200ms` before pressing Enter.
+
+You can change the delay or skip Enter:
 
 ```bash
 t send codex --message "status?" --enter-delay-ms 500
 t send codex --message "status?" --no-enter
 ```
 
-## Automation Workflow
-
-### 1. Add a recurring job
+## Recurring jobs
 
 Inline message:
 
@@ -318,7 +363,8 @@ Inline message:
 t jobs add codex --every 15m --message "check status and continue"
 ```
 
-If you are already inside tmux, use `:current` to target the active session without typing its name:
+If you're already inside tmux, use `:current` to target the active session
+without typing its name:
 
 ```bash
 t jobs add :current --every 15m --message \
@@ -333,9 +379,12 @@ Shared prompt file:
 t jobs add rk-codex --every 30m --message-file prompts/rk-codex-progress.txt
 ```
 
-When a job uses `--message-file`, `tmuxctl` stores the file path and reads the file at send time. Updating the file updates future scheduled runs.
+When a job uses `--message-file`, `tmuxctl` stores the file path and reads
+the file at send time. Updating the file updates future scheduled runs.
 
-### 2. Run the scheduler
+## Run the scheduler
+
+Start the daemon with:
 
 ```bash
 t jobs daemon
@@ -343,7 +392,26 @@ t jobs daemon
 
 Recurring jobs only run while the daemon is running.
 
-### 3. Inspect and edit jobs
+The same daemon also checks session health every 60 seconds
+(`--health-interval`). It logs a `health_check` event only when the
+unhealthy set changes (a new problem, or one that resolved), not on every
+tick while something stays broken. It does the same for the
+oversubscription warning.
+
+By default it only detects and logs. Recreating an unhealthy session is a
+bigger blast radius, so it's off until you opt in.
+
+Pass `--auto-salvage`:
+
+```bash
+t jobs daemon --auto-salvage
+```
+
+Or set `auto_salvage = true` in `~/.config/tmuxctl/cgroups.toml`, but even
+then sessions classified as `needs-manual-reclaim` are never recreated
+automatically, so use `t salvage` for those.
+
+Look at and edit jobs with:
 
 ```bash
 t jobs
@@ -368,7 +436,7 @@ t jobs remove 3
 
 If a scheduled job fails 3 runs in a row, `tmuxctl jobs daemon` removes it automatically.
 
-## Session Cleanup
+## Kill and rename
 
 Kill a session by name:
 
@@ -395,25 +463,32 @@ t rename codex codex-main
 t rename 2 archived-worker
 ```
 
-A name starting with a dash is a suffix shorthand: `-cli` always means
-`<session's directory>-cli`, so you do not have to retype the project part.
+A name starting with a dash is a suffix shorthand. `-cli` always means
+`<session's directory>-cli`, so you don't have to retype the project part.
 
 ```bash
 t rename 2 -cli          # git-dataops-sop  ->  git-dataops-cli
 ```
 
-The prefix is the name derived from the session's own working directory — the
-same rule that named it when it was created — and the suffix replaces whatever
-followed it. A session with no suffix yet gains one (`git-dtc-website` becomes
-`git-dtc-website-design`). The current name is never consulted, so a hand-picked
-name is normalized back onto its directory.
+The prefix comes from the session's own working directory, using the same
+rule that named it when it was created. The suffix replaces whatever
+followed that prefix. A session with no suffix yet gains one
+(`git-dtc-website` becomes `git-dtc-website-design`). The current name is
+never consulted, so a name you picked by hand is normalized back onto its
+directory.
 
-## Inspect a Session
+After a rename, the per-session socket file moves with the new name so
+lookups keep working. The systemd scope and server unit names stay tied to
+the original name.
 
-`describe` shows what is actually running inside a session — the process in each
-pane, its working directory, the cgroup the session lives in, and (for sessions
-started by `t` with a memory cap) live RAM and CPU usage read straight from that
-cgroup. Target it by name, by the numeric ID from `t list`, or `:current`:
+## `t describe`
+
+`describe` shows what's actually running inside a session. For each pane it
+prints the process, the working directory, and the cgroup. For sessions
+started by `t` with a memory cap, it also prints live RAM and CPU usage
+read straight from that cgroup.
+
+Target it by name, by the numeric ID from `t list`, or `:current`:
 
 ```bash
 t describe codex            # by name
@@ -422,10 +497,10 @@ t describe :current         # the session you are in
 ```
 
 For a capped session it reads memory and CPU from the session's
-`tmuxctl-<name>.scope` cgroup, so the numbers cover the whole process tree, not
-just the shell:
+`tmuxctl-<name>.scope` cgroup, so the numbers cover the whole process tree,
+not just the shell:
 
-```
+```text
 Session:  git-myproj  (1 window(s), 1 pane(s))
 
 WIN.PANE  PID      COMMAND          DIRECTORY
@@ -438,12 +513,12 @@ CPU time: 7m25s
 Tasks:    222
 ```
 
-A session you did **not** start through `t` has no memory cap. `describe` says so
-and prints the real cgroup it found (e.g. a plain `session-NN.scope`), so you can
-tell at a glance which sessions are protected and which can still take the whole
-tmux server down under memory pressure:
+A session you didn't start through `t` has no memory cap. `describe` says
+so and prints the real cgroup it found, for example a plain
+`session-NN.scope`. That tells you which sessions are protected and which
+can still take the machine down under memory pressure.
 
-```
+```text
 Scope:    none — session is uncapped (not started by tmuxctl)
 Cgroup:   /user.slice/.../session-7.scope
           No per-session RAM/CPU cap; the box-wide OOM-killer can
@@ -451,9 +526,99 @@ Cgroup:   /user.slice/.../session-7.scope
           t :git-myproj --mem 24G
 ```
 
-## Shell Setup
+## `t doctor`
 
-### Bash completion
+Run `t doctor` to see RAM and cgroup OOM kills. It also shows live memory
+limits, oversubscription, and `dtach` wrapping, plus whether each session
+is on its own server or still on the legacy shared socket.
+
+```bash
+t doctor
+```
+
+## Session event log
+
+These events go into a durable log:
+
+- create
+- kill
+- rename
+- limit
+- health-check
+- capacity-warning
+
+That log survives the process and cgroup dying, so after a crash we can still
+see which sessions existed and how they were created.
+
+```bash
+t sessions-log
+t sessions-log --session git-myproj
+t sessions-log --since 7 --limit 50
+```
+
+## Salvage after a crash
+
+`t salvage` answers, for every tmuxctl session, whether there's something
+live to reattach to, or something that needs recreating. It reads the event
+log instead of guessing from the session name.
+
+```bash
+t salvage
+```
+
+Typical statuses:
+
+```text
+SESSION                    STATUS                DETAIL
+git-myproj                 healthy               own server is up
+git-other                  reattachable-dtach    dtach master survived
+git-gone                   gone                  recreate from log
+git-stale                  stale-work            leftover process holds the scope
+git-foreign                needs-manual-reclaim  foreign occupant; do not auto-recreate
+```
+
+Recreate every `gone` / `stale-work` session (never `needs-manual-reclaim`):
+
+```bash
+t salvage --recreate
+```
+
+Kill leftover processes whose working directory no longer exists on disk.
+Dry-run unless you pass `--yes`.
+
+```bash
+t salvage --kill-dead-cwd
+t salvage --kill-dead-cwd --yes
+```
+
+## Strays and reap
+
+Scan every tmux socket for leftover sessions, dead socket files, orphan
+servers, and stranded `tmux -CC` control-mode clients:
+
+```bash
+t strays
+t strays --stale 14
+```
+
+Kill detached idle servers and remove dead socket files. The command
+dry-runs by default, and it never touches a server that still has an
+attached session.
+
+```bash
+t reap
+t reap --stale 14 --yes
+```
+
+Detach duplicate orphan control-mode clients (the PocketShell `-CC` crash
+case). This never kills a session, a server, or an interactive client.
+
+```bash
+t reap-clients
+t reap-clients --yes
+```
+
+## Bash completion
 
 Install completion:
 
@@ -473,17 +638,18 @@ Completion works for:
 - plain session names
 - `:session` shortcuts
 
-### Local checkout helper
+## Local checkout helper
 
-If you are working from this repository and want its virtualenv binaries on your `PATH`, run:
+If you're working from this repository and want its virtualenv binaries on your `PATH`, run:
 
 ```bash
 ./install.sh
 ```
 
-That appends this repo's `.venv/bin` and `alias tl='t l'` to `~/.bashrc`, skipping any line that is already present.
+This appends the repo's `.venv/bin` and `alias tl='t l'` to `~/.bashrc`,
+skipping any line that's already present.
 
-## How Scheduling Works
+## Scheduling
 
 Recurring jobs are stored in:
 
@@ -491,11 +657,14 @@ Recurring jobs are stored in:
 ~/.config/tmuxctl/tmuxctl.db
 ```
 
+The same database holds the session event log (`session_events`).
+
 The scheduler is database-driven:
 
 - `jobs add` creates jobs
 - `jobs edit`, `jobs pause`, `jobs resume`, and `jobs remove` modify jobs
-- `jobs daemon` polls for due jobs and runs them
+- `jobs daemon` polls for due jobs, runs them, and on a coarser cadence
+  (`--health-interval`, default 60s) scans session health
 
 If you want recurring jobs to survive logout or reboot, keep `t jobs daemon` running with something like:
 
@@ -503,7 +672,7 @@ If you want recurring jobs to survive logout or reboot, keep `t jobs daemon` run
 - `launchd`
 - `cron @reboot`
 
-### Running as a systemd user service (Linux)
+## Running as a systemd user service (Linux)
 
 Create `~/.config/systemd/user/tmuxctl.service`:
 
@@ -522,7 +691,10 @@ RestartSec=5
 WantedBy=default.target
 ```
 
-Adjust `ExecStart` to wherever `tmuxctl` is installed (for a local editable checkout, point at `.venv/bin/tmuxctl`). Then enable and start it:
+Adjust `ExecStart` to wherever `tmuxctl` is installed, and for a local
+editable checkout point it at `.venv/bin/tmuxctl`.
+
+Then enable and start it:
 
 ```bash
 systemctl --user daemon-reload
@@ -538,45 +710,56 @@ sudo loginctl enable-linger "$USER"
 
 Logs are available via `journalctl --user -u tmuxctl -f`.
 
-## Known Problems
+## An occupied scope can block a capped recreate of the same name
 
-### An orphaned scope can block recreating a session of the same name
+`t kill` tears a session's memory-capped scope down with
+`systemctl --user stop tmuxctl-<name>.scope`, so the unit name is free for next time.
 
-Normally `t kill` tears a session's memory-capped scope down (`systemctl --user
-stop tmuxctl-<name>.scope`), so the unit name is free for next time. Two things
-have to go wrong together to defeat that:
+Two things have to go wrong together to leave the name occupied:
 
-1. the tmux **server dies uncleanly** (a crash or machine-wide OOM), so the
-   normal kill path — and its scope teardown — never runs, **and**
-2. a **disowned background process** (e.g. an `Xvfb`, a dev server, anything
-   `nohup`/`&`-launched) is still running inside that session's scope.
+1. the tmux server dies uncleanly (a crash or machine-wide OOM), so the
+   normal kill path, and its scope teardown, never runs
+2. a disowned background process (for example an `Xvfb`, a dev server,
+   anything `nohup`/`&`-launched) is still running inside that session's
+   scope
 
 The dead session's shell is gone, but the stray process keeps the
-`tmuxctl-<name>.scope` cgroup alive. The next time you try to create a session
-with the **same derived name** (e.g. `t -` from the same folder), tmuxctl asks
-`systemd-run` for that unit name and it fails with *"Unit
-tmuxctl-<name>.scope was already loaded"*. The new tmux pane's command dies on
-launch, and instead of a clear error you usually see terminal escape codes
-(a Device-Attributes reply such as `^[[?61;...c`) leak onto your prompt as the
-aborted tmux client exits.
+`tmuxctl-<name>.scope` cgroup alive.
 
-**Diagnose** — look for a scope whose tmux session no longer exists:
+tmuxctl no longer fails silently when you create that name again:
+
+- a dead or failed leftover unit is reset automatically and the name is reused
+- a surviving dtach master (if `dtach_wrap` is on) is treated as the
+  session, and recreate reattaches into it
+- any other live process holding the scope: create still succeeds, but
+  the new session starts without a memory cap, and tmuxctl prints how to
+  reclaim the name
+
+Diagnose with:
 
 ```bash
-systemctl --user list-units --type=scope --all 'tmuxctl-*'
-systemctl --user status tmuxctl-<name>.scope   # shows the stray process holding it open
+t salvage
+t doctor
+systemctl --user status tmuxctl-<name>.scope
 ```
 
-**Fix** — stop the orphan scope (this also kills the stray process inside it),
-then create the session again:
+Stop the orphan scope (this also kills the stray process inside it), then
+create the session again:
 
 ```bash
 systemctl --user stop tmuxctl-<name>.scope
+t :my-session
 ```
 
-This is rare (it needs an unclean crash *and* a backgrounded process), so it is
-documented rather than worked around. A future version may auto-recover by
-clearing a stale scope whose session is gone before creating a new one.
+`t salvage --recreate` recreates `gone` and `stale-work` sessions, and it
+won't touch `needs-manual-reclaim`.
+
+## Sessions created before per-session servers
+
+Older sessions still live on the shared default socket and they keep working.
+They still share one server, so if that process dies they all die.
+`t doctor` marks them `LEGACY`, so kill and recreate each one to move it onto
+its own server.
 
 ## Alternatives
 
