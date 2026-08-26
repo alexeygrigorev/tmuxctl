@@ -104,7 +104,7 @@ impl Registry {
                 Err(error) => eprintln!("warning: {error:#}"),
             }
         }
-        records.sort_by(|left, right| right.updated_at_ms.cmp(&left.updated_at_ms));
+        records.sort_by_key(|record| std::cmp::Reverse(record.updated_at_ms));
         Ok(records)
     }
 
@@ -225,6 +225,7 @@ impl Registry {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .mode(0o600)
             .open(&self.paths.lock_file)
             .with_context(|| {
