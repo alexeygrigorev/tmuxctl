@@ -99,8 +99,8 @@ fn create_or_find(registry: &Registry, args: SessionArgs) -> Result<SessionRecor
         mark_and_release_stale(registry, &record, "server socket is not responding")?;
     }
 
-    let cwd = canonical_directory(args.cwd)?;
     let limits = resolve_limits(&args)?;
+    let cwd = canonical_directory(args.cwd)?;
     let launcher = if args.direct {
         LauncherKind::Direct
     } else {

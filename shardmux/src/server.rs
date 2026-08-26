@@ -10,9 +10,7 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use portable_pty::{
-    ChildKiller, CommandBuilder, ExitStatus, PtySize, PtySystem, native_pty_system,
-};
+use portable_pty::{ChildKiller, CommandBuilder, ExitStatus, PtySize, native_pty_system};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use uuid::Uuid;
 
