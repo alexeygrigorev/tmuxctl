@@ -258,10 +258,7 @@ fn handle_client(
     commands: Sender<ServerCommand>,
 ) -> Result<()> {
     let mut active_id = None;
-    loop {
-        let Some(frame) = read_frame(&mut stream)? else {
-            break;
-        };
+    while let Some(frame) = read_frame(&mut stream)? {
         match frame.kind {
             kind::ATTACH => {
                 if active_id.is_some() {
