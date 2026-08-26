@@ -35,14 +35,7 @@ fn killing_one_session_server_does_not_break_another() {
         "create alpha",
     );
     assert_success(
-        run(&[
-            "create",
-            "beta",
-            "--direct",
-            "--no-limit",
-            "--",
-            "/bin/cat",
-        ]),
+        run(&["create", "beta", "--direct", "--no-limit", "--", "/bin/cat"]),
         "create beta",
     );
 

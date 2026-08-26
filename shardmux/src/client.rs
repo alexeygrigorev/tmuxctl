@@ -87,7 +87,10 @@ pub fn attach(record: &SessionRecord) -> Result<()> {
                 break;
             }
             kind::ERROR => {
-                bail!("session server: {}", String::from_utf8_lossy(&frame.payload));
+                bail!(
+                    "session server: {}",
+                    String::from_utf8_lossy(&frame.payload)
+                );
             }
             other => bail!("unexpected server frame type {other}"),
         }
@@ -157,9 +160,7 @@ fn spawn_input_thread(writer: Arc<Mutex<UnixStream>>, done: Arc<AtomicBool>) {
                     outgoing.push(byte);
                 }
             }
-            if !outgoing.is_empty()
-                && write_locked(&writer, kind::INPUT, &outgoing).is_err()
-            {
+            if !outgoing.is_empty() && write_locked(&writer, kind::INPUT, &outgoing).is_err() {
                 done.store(true, Ordering::Relaxed);
                 return;
             }
@@ -174,12 +175,8 @@ fn spawn_resize_thread(writer: Arc<Mutex<UnixStream>>, done: Arc<AtomicBool>) {
             thread::sleep(Duration::from_millis(200));
             let current = terminal::size().unwrap_or(previous);
             if current != previous {
-                if write_locked(
-                    &writer,
-                    kind::RESIZE,
-                    &encode_resize(current.0, current.1),
-                )
-                .is_err()
+                if write_locked(&writer, kind::RESIZE, &encode_resize(current.0, current.1))
+                    .is_err()
                 {
                     done.store(true, Ordering::Relaxed);
                     return;
@@ -196,7 +193,9 @@ fn write_locked(writer: &Mutex<UnixStream>, kind: u8, payload: &[u8]) -> io::Res
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 struct RawModeGuard;

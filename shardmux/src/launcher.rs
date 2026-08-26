@@ -131,7 +131,9 @@ fn launch_direct(registry: &Registry, record: &SessionRecord) -> Result<()> {
         });
     }
 
-    let child = command.spawn().context("failed to launch shardmux server")?;
+    let child = command
+        .spawn()
+        .context("failed to launch shardmux server")?;
     let pid = child.id();
     drop(child);
     registry.update(record.id, |stored| {
@@ -187,7 +189,10 @@ fn diagnostics(registry: &Registry, record: &SessionRecord) -> String {
                         tail.into_iter().rev().collect::<Vec<_>>().join("\n")
                     )
                 }
-                Err(error) => format!("could not read direct server log {}: {error}", path.display()),
+                Err(error) => format!(
+                    "could not read direct server log {}: {error}",
+                    path.display()
+                ),
             }
         }
     }

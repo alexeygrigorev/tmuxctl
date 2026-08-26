@@ -326,10 +326,7 @@ fn send_response(stream: &mut UnixStream, kind: u8, payload: &[u8]) -> Result<()
     Ok(())
 }
 
-fn copy_pty_output(
-    mut reader: Box<dyn Read + Send>,
-    shared: Arc<Shared>,
-) -> io::Result<()> {
+fn copy_pty_output(mut reader: Box<dyn Read + Send>, shared: Arc<Shared>) -> io::Result<()> {
     let mut buffer = [0_u8; IO_CHUNK_BYTES];
     loop {
         match reader.read(&mut buffer) {
@@ -493,5 +490,7 @@ impl Scrollback {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }

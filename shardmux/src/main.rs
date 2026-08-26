@@ -63,9 +63,7 @@ fn run() -> Result<()> {
             client::attach(&record)
         }
         Commands::List { json } => list_sessions(&Registry::open()?, json),
-        Commands::Status { target, json } => {
-            status_session(&Registry::open()?, &target, json)
-        }
+        Commands::Status { target, json } => status_session(&Registry::open()?, &target, json),
         Commands::Send {
             target,
             message,
@@ -84,9 +82,7 @@ fn run() -> Result<()> {
 fn create_or_find(registry: &Registry, args: SessionArgs) -> Result<SessionRecord> {
     validate_name(&args.name)?;
     if args.scrollback_bytes > MAX_SCROLLBACK_BYTES {
-        bail!(
-            "--scrollback-bytes is capped at {MAX_SCROLLBACK_BYTES} bytes in this first version"
-        );
+        bail!("--scrollback-bytes is capped at {MAX_SCROLLBACK_BYTES} bytes in this first version");
     }
 
     let existing = match registry.find_by_name(&args.name) {
@@ -170,7 +166,10 @@ fn canonical_directory(path: PathBuf) -> Result<PathBuf> {
     let canonical = fs::canonicalize(&path)
         .with_context(|| format!("working directory does not exist: {}", path.display()))?;
     if !canonical.is_dir() {
-        bail!("working directory is not a directory: {}", canonical.display());
+        bail!(
+            "working directory is not a directory: {}",
+            canonical.display()
+        );
     }
     Ok(canonical)
 }
@@ -254,7 +253,10 @@ fn status_session(registry: &Registry, target: &str, as_json: bool) -> Result<()
         "OOM-contained:     {}",
         if record.limits_applied { "yes" } else { "no" }
     );
-    println!("MemoryMax:         {}", option_label(&record.limits.memory_max));
+    println!(
+        "MemoryMax:         {}",
+        option_label(&record.limits.memory_max)
+    );
     println!(
         "MemorySwapMax:     {}",
         option_label(&record.limits.memory_swap_max)
@@ -422,8 +424,8 @@ fn doctor(registry: &Registry) -> Result<()> {
 }
 
 fn check_directory(label: &str, path: &std::path::Path) -> Result<()> {
-    let metadata = fs::metadata(path)
-        .with_context(|| format!("cannot inspect {label} {}", path.display()))?;
+    let metadata =
+        fs::metadata(path).with_context(|| format!("cannot inspect {label} {}", path.display()))?;
     let mode = metadata.permissions().mode() & 0o777;
     let protected = mode & 0o077 == 0;
     println!(

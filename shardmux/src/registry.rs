@@ -249,9 +249,9 @@ pub fn validate_name(name: &str) -> Result<()> {
     if !first.is_ascii_alphanumeric() {
         bail!("session names must start with an ASCII letter or digit");
     }
-    if !chars.all(|character| {
-        character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
-    }) {
+    if !chars
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-'))
+    {
         bail!("session names may contain only ASCII letters, digits, '.', '_' and '-'");
     }
     Ok(())

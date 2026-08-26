@@ -24,9 +24,7 @@ pub fn validate_systemd_value(value: &str, field: &str) -> Result<()> {
         .chars()
         .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '%'))
     {
-        bail!(
-            "{field} contains unsupported characters; examples: 512M, 12G, 75% or infinity"
-        );
+        bail!("{field} contains unsupported characters; examples: 512M, 12G, 75% or infinity");
     }
     Ok(())
 }
