@@ -9,7 +9,7 @@ pub const DEFAULT_MEMORY_MAX: &str = "12G";
 pub const DEFAULT_MEMORY_SWAP_MAX: &str = "8G";
 pub const DEFAULT_SCROLLBACK_BYTES: usize = 1024 * 1024;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionState {
     Starting,
@@ -18,7 +18,7 @@ pub enum SessionState {
     Failed,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LauncherKind {
     Systemd,
