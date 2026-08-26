@@ -1,0 +1,46 @@
+name: shardmux
+
+on:
+  push:
+    paths:
+      - "shardmux/**"
+      - ".github/workflows/shardmux.yml"
+  pull_request:
+    paths:
+      - "shardmux/**"
+      - ".github/workflows/shardmux.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: shardmux
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "shardmux -> target"
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Test
+        run: cargo test --all-targets
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Build PyPI wheel
+        run: |
+          python -m pip install --upgrade maturin
+          maturin build --release

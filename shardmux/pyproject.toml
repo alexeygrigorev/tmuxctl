@@ -1,0 +1,32 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "shardmux"
+version = "0.1.0"
+description = "Failure-isolated terminal sessions"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+  { name = "Alexey Grigorev" },
+]
+keywords = ["terminal", "multiplexer", "pty", "systemd", "oom"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Rust",
+  "Topic :: System :: Shells",
+  "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/alexeygrigorev/tmuxctl/tree/main/shardmux"
+Issues = "https://github.com/alexeygrigorev/tmuxctl/issues"
+
+[tool.maturin]
+bindings = "bin"
+manifest-path = "Cargo.toml"
+strip = true
