@@ -1,10 +1,8 @@
-use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::Duration;
 
 use anyhow::{Result, bail};
 
@@ -73,12 +71,4 @@ pub fn path_to_utf8(path: &Path, field: &str) -> Result<String> {
         Some(value) => Ok(value.to_owned()),
         None => bail!("{field} must be valid UTF-8: {}", path.display()),
     }
-}
-
-pub fn sleep_briefly() {
-    std::thread::sleep(Duration::from_millis(50));
-}
-
-pub fn os_display(value: &OsStr) -> String {
-    value.to_string_lossy().into_owned()
 }
