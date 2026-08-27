@@ -1,9 +1,18 @@
 .venv/
 .venv-smoke/
+.tox/
+.nox/
 __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .coverage
+.coverage.*
+htmlcov/
 dist/
 build/
+
+# Local agent worktrees (Claude Code and compatible tools)
+.claude/worktrees/
