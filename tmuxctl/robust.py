@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -161,6 +162,35 @@ def socket_for(session_name: str, uid: int | None = None) -> str:
     if len(path.encode()) >= 108:
         raise ValueError(f"socket path too long for AF_UNIX (>=108 bytes): {path!r}")
     return path
+
+
+def ensure_socket_directory(session_name: str) -> None:
+    """Create and secure the parent directory for a dedicated tmux socket.
+
+    tmux creates ``/tmp/tmux-<uid>`` when it uses its default socket, but it
+    does not do so for an explicit ``-S`` path.  A dedicated server may be the
+    first tmux process after boot, so create that directory ourselves before
+    handing the socket path to tmux.
+    """
+    directory = Path(socket_for(session_name)).parent
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+    # Do not follow a pre-planted symlink in /tmp, and never reuse another
+    # user's directory.  Tighten permissions on a directory we own so the
+    # socket is not exposed when a custom TMUX_TMPDIR had a permissive umask.
+    flags = os.O_RDONLY | os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(directory, flags)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+            raise PermissionError(
+                f"tmux socket directory must be owned by uid {os.getuid()}: {directory}"
+            )
+        os.fchmod(fd, 0o700)
+    finally:
+        os.close(fd)
 
 
 def session_server_unit(session_name: str) -> str:

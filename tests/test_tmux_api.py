@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import uuid
@@ -633,6 +634,25 @@ def test_create_detached_uses_detached_child_stdio(monkeypatch) -> None:
     assert seen_kwargs and seen_kwargs[0].get("detach_child_stdio") is True
 
 
+def test_create_detached_prepares_explicit_socket_directory(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(tmux_api, "session_exists", lambda name: False)
+    monkeypatch.setattr(robust, "systemd_available", lambda: False)
+    monkeypatch.setenv("TMUX_TMPDIR", str(tmp_path / "clean-boot"))
+    monkeypatch.setattr(
+        tmux_api,
+        "_new_session_command",
+        lambda name, cwd, *, flag: (["new-session", "-d", "-s", name], {}),
+    )
+
+    def fake_run_tmux(args, **kwargs):
+        assert Path(robust.socket_for("proj")).parent.is_dir()
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(tmux_api, "_run_tmux", fake_run_tmux)
+
+    tmux_api.create_detached_session("proj")
+
+
 def test_kill_session_stops_scope(monkeypatch) -> None:
     monkeypatch.setattr(tmux_api, "locate_session", lambda name: robust.socket_for("proj"))
     monkeypatch.setattr(
@@ -804,9 +824,13 @@ def test_list_session_info_and_session_panes_survive_real_tmux(tmp_path) -> None
     a plain session with no -S/-L lands on the legacy default socket, which
     list_session_info()/session_panes() must still find via their fallback."""
     name = f"tmuxctl-issue6-{uuid.uuid4().hex[:8]}"
+    env = os.environ.copy()
+    env.pop("TMUX", None)
+    env.pop("TMUX_PANE", None)
     subprocess.run(
         ["tmux", "new-session", "-d", "-s", name, "-c", str(tmp_path)],
         check=True,
+        env=env,
     )
     try:
         sessions = tmux_api.list_session_info()
@@ -819,7 +843,7 @@ def test_list_session_info_and_session_panes_survive_real_tmux(tmp_path) -> None
         assert len(panes) == 1
         assert panes[0].cwd == str(tmp_path)
     finally:
-        subprocess.run(["tmux", "kill-session", "-t", name], check=False)
+        subprocess.run(["tmux", "kill-session", "-t", name], check=False, env=env)
 
 
 def test_process_cgroup_reads_unified_line(monkeypatch, tmp_path) -> None:

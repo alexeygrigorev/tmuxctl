@@ -478,6 +478,10 @@ def _bootstrap_and_create(
     Returns the resolved mem/swap/high/scope_unit/socket_path for the event
     log, mirroring ``_new_session_command``'s ``resolved`` shape.
     """
+    # An explicit ``tmux -S`` socket does not create its parent directory.
+    # This can be the first tmux server after boot, before the default socket
+    # has caused tmux itself to create /tmp/tmux-<uid>.
+    robust.ensure_socket_directory(session_name)
     tmux_argv, resolved = _new_session_command(session_name, cwd, flag=flag)
     resolved = {**resolved, "socket_path": robust.socket_for(session_name)}
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -581,6 +582,17 @@ def test_socket_for_rejects_paths_too_long_for_af_unix(monkeypatch) -> None:
     monkeypatch.delenv("TMUX_TMPDIR", raising=False)
     with pytest.raises(ValueError, match="too long"):
         robust.socket_for("x" * 100, uid=1000)
+
+
+def test_ensure_socket_directory_creates_secure_tmux_uid_dir(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("TMUX_TMPDIR", str(tmp_path / "clean-boot"))
+
+    robust.ensure_socket_directory("proj")
+
+    directory = Path(robust.socket_for("proj")).parent
+    assert directory.is_dir()
+    assert directory.stat().st_uid == os.getuid()
+    assert directory.stat().st_mode & 0o777 == 0o700
 
 
 def test_session_server_unit_name() -> None:
