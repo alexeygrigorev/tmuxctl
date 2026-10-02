@@ -1,0 +1,49 @@
+{
+  "theme": "github-dark",
+  "chrome": "window",
+  "title": "systemd — one server + one scope per session",
+  "width": 1512,
+  "pad_bottom": 71,
+  "pad_bottom": 71,
+  "lines": [
+    {"spans": [
+      ["tmuxctl-server.slice", "blue", true],
+      {"t": "(uncapped, protected)", "c": "muted", "col": 44}
+    ]},
+    {"spans": [
+      ["├── ", "faint"],
+      ["tmuxctl-server-project-a.service", "bright"]
+    ]},
+    {"spans": [
+      ["│   └── ", "faint"],
+      ["tmux -S /tmp/tmux-1000/tmuxctl-project-a", "fg"],
+      {"t": "OOMScoreAdjust=-900", "c": "yellow", "col": 52}
+    ]},
+    {"spans": [
+      ["└── ", "faint"],
+      ["tmuxctl-server-project-b.service", "bright"]
+    ]},
+    {"lead": 1, "spans": [
+      ["robust.slice", "green", true],
+      {"t": "(capped parent for session work)", "c": "muted", "col": 44}
+    ]},
+    {"spans": [
+      ["├── ", "faint"],
+      ["tmuxctl-project-a.scope", "green", true],
+      {"t": "MemoryHigh=10.2G MemoryMax=12G MemorySwapMax=8G", "c": "yellow", "col": 29}
+    ]},
+    {"spans": [
+      ["│   └── ", "faint"],
+      ["login shell (+ optional dtach) + everything launched from panes", "muted"]
+    ]},
+    {"spans": [
+      ["└── ", "faint"],
+      ["tmuxctl-project-b.scope", "green", true],
+      {"t": "MemoryHigh=20.4G MemoryMax=24G MemorySwapMax=8G", "c": "yellow", "col": 29}
+    ]},
+    {"spans": [
+      ["    └── ", "faint"],
+      ["login shell (+ optional dtach) + everything launched from panes", "muted"]
+    ]}
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "theme": "github-dark",
+  "chrome": "window",
+  "title": "tmuxctl describe",
+  "width": 1151,
+  "pad_bottom": 70,
+  "pad_bottom": 70,
+  "lines": [
+    {"spans": [["$ ", "prompt"], ["t describe codex", "bright", true]]},
+    {"lead": 1, "spans": [
+      ["Session:  ", "muted"],
+      ["codex", "bright"],
+      ["  ", "fg"],
+      ["(1 window(s), 2 pane(s))", "muted"]
+    ]},
+    {"lead": 1, "spans": [
+      ["WIN.PANE", "white", true],
+      {"t": "PID", "c": "white", "b": true, "col": 10},
+      {"t": "COMMAND", "c": "white", "b": true, "col": 20},
+      {"t": "DIRECTORY", "c": "white", "b": true, "col": 30}
+    ]},
+    {"spans": [
+      ["0.0*", "blue"],
+      {"t": "3564734", "c": "fg", "col": 10},
+      {"t": "codex", "c": "fg", "col": 20},
+      {"t": "/home/alexey/git/api", "c": "bright", "col": 30}
+    ]},
+    {"spans": [
+      ["1.0", "fg"],
+      {"t": "3565102", "c": "fg", "col": 10},
+      {"t": "nvim", "c": "fg", "col": 20},
+      {"t": "/home/alexey/git/api", "c": "bright", "col": 30}
+    ]},
+    {"lead": 1, "col": 0, "spans": [
+      ["Scope:    ", "muted"],
+      ["tmuxctl-codex.scope", "green", true],
+      ["  ", "fg"],
+      ["(active)", "muted"]
+    ]},
+    {"col": 0, "spans": [
+      ["Cgroup:   ", "muted"],
+      ["/user.slice/.../robust.slice/tmuxctl-codex.scope", "bright"]
+    ]},
+    {"col": 0, "spans": [
+      ["Memory:   ", "muted"],
+      ["3.4G / 12.0G", "green", true],
+      ["  ", "fg"],
+      ["(peak 5.2G, swap 0B)", "muted"]
+    ]},
+    {"col": 0, "spans": [
+      ["CPU time: ", "muted"],
+      ["7m25s", "bright"]
+    ]},
+    {"col": 0, "spans": [
+      ["Tasks:    ", "muted"],
+      ["222", "bright"]
+    ]}
+  ]
+}

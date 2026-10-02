@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1512" height="605" viewBox="0 0 1512 605" role="img" aria-label="systemd — one server + one scope per session">
+<rect x="1" y="1" width="1510" height="603" rx="16" fill="#0d1117" stroke="#30363d" stroke-width="2"/>
+<path d="M 2 16 Q 2 2 16 2 L 1496 2 Q 1510 2 1510 16 L 1510 99 Q 1510 109 1500 109 L 26 109 Q 16 109 16 99 Z" fill="#161b22"/>
+<line x1="2" y1="80" x2="1510" y2="80" stroke="#30363d" stroke-width="2"/>
+<circle cx="44.5" cy="40" r="12.5" fill="#ff5f56"/>
+<circle cx="84.5" cy="40" r="12.5" fill="#ffbd2e"/>
+<circle cx="124.5" cy="40" r="12.5" fill="#27c93f"/>
+<text x="756" y="48" text-anchor="middle" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="21" fill="#8b949e">systemd — one server + one scope per session</text>
+<text x="52" y="156" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" font-weight="bold" fill="#79c0ff" xml:space="preserve">tmuxctl-server.slice</text>
+<text x="846.64" y="156" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#8b949e" xml:space="preserve">(uncapped, protected)</text>
+<text x="52" y="198" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#6e7681" xml:space="preserve">├── </text>
+<text x="124.24" y="198" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#e6edf3" xml:space="preserve">tmuxctl-server-project-a.service</text>
+<text x="52" y="240" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#6e7681" xml:space="preserve">│   └── </text>
+<text x="196.48" y="240" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#c9d1d9" xml:space="preserve">tmux -S /tmp/tmux-1000/tmuxctl-project-a</text>
+<text x="991.12" y="240" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#d29922" xml:space="preserve">OOMScoreAdjust=-900</text>
+<text x="52" y="282" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#6e7681" xml:space="preserve">└── </text>
+<text x="124.24" y="282" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#e6edf3" xml:space="preserve">tmuxctl-server-project-b.service</text>
+<text x="52" y="366" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" font-weight="bold" fill="#3fb950" xml:space="preserve">robust.slice</text>
+<text x="846.64" y="366" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#8b949e" xml:space="preserve">(capped parent for session work)</text>
+<text x="52" y="408" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#6e7681" xml:space="preserve">├── </text>
+<text x="124.24" y="408" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" font-weight="bold" fill="#3fb950" xml:space="preserve">tmuxctl-project-a.scope</text>
+<text x="575.74" y="408" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#d29922" xml:space="preserve">MemoryHigh=10.2G MemoryMax=12G MemorySwapMax=8G</text>
+<text x="52" y="450" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#6e7681" xml:space="preserve">│   └── </text>
+<text x="196.48" y="450" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#8b949e" xml:space="preserve">login shell (+ optional dtach) + everything launched from panes</text>
+<text x="52" y="492" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#6e7681" xml:space="preserve">└── </text>
+<text x="124.24" y="492" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" font-weight="bold" fill="#3fb950" xml:space="preserve">tmuxctl-project-b.scope</text>
+<text x="575.74" y="492" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#d29922" xml:space="preserve">MemoryHigh=20.4G MemoryMax=24G MemorySwapMax=8G</text>
+<text x="52" y="534" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#6e7681" xml:space="preserve">    └── </text>
+<text x="196.48" y="534" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#8b949e" xml:space="preserve">login shell (+ optional dtach) + everything launched from panes</text>
+</svg>

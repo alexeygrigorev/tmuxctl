@@ -1,0 +1,44 @@
+{
+  "theme": "github-dark",
+  "chrome": "window",
+  "title": "tmuxctl — recent sessions",
+  "width": 1241,
+  "pad_bottom": 71,
+  "pad_bottom": 71,
+  "lines": [
+    {"spans": [["$ ", "prompt"], ["t", "bright", true]]},
+    {"lead": 1, "spans": [
+      {"t": "IDX", "c": "white", "b": true, "col": 2},
+      {"t": "SESSION", "c": "white", "b": true, "col": 7},
+      {"t": "CREATED", "c": "white", "b": true, "col": 29}
+    ]},
+    {"spans": [
+      {"t": "1", "c": "fg", "col": 2},
+      {"t": "codex", "c": "bright", "col": 7},
+      {"t": "2026-09-28 09:14:02", "c": "muted", "col": 29}
+    ]},
+    {"spans": [
+      {"t": "2", "c": "fg", "col": 2},
+      {"t": "backend-worker", "c": "bright", "col": 7},
+      {"t": "2026-09-28 08:41:37", "c": "muted", "col": 29}
+    ]},
+    {"spans": [
+      {"t": "3", "c": "fg", "col": 2},
+      {"t": "docs", "c": "bright", "col": 7},
+      {"t": "2026-09-27 22:03:19", "c": "muted", "col": 29}
+    ]},
+    {"spans": [
+      {"t": "4", "c": "fg", "col": 2},
+      {"t": "experiments", "c": "bright", "col": 7},
+      {"t": "2026-09-26 18:47:55", "c": "muted", "col": 29}
+    ]},
+    {"lead": 1, "col": 2, "spans": [
+      ["hints: ", "muted"],
+      ["t", "prompt", true], [" ", "muted"], ["2", "blue", true], [" attach", "muted"],
+      [" · ", "faint"],
+      ["t", "prompt", true], [" ", "muted"], [":new", "blue", true], [" create-or-attach", "muted"],
+      [" · ", "faint"],
+      ["t", "prompt", true], [" ", "muted"], ["-", "blue", true], [" this folder", "muted"]
+    ]}
+  ]
+}
