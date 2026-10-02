@@ -6,9 +6,9 @@
 
 **One session, one server, one memory cap.**
 
-Jump between tmux sessions in one keystroke, keep every project in its own
-blast-radius-isolated server, and keep long-running agent sessions fed with
-scheduled messages — so a runaway build or a crashed agent never takes your
+Jump between tmux sessions in one keystroke and keep every project in its own
+blast-radius-isolated server. Long-running agent sessions stay fed with
+scheduled messages, so a runaway build or a crashed agent never takes your
 other work down with it.
 
 [![PyPI](https://img.shields.io/pypi/v/tmuxctl?color=blue&label=pypi)](https://pypi.org/project/tmuxctl/)
@@ -26,7 +26,7 @@ uv tool install tmuxctl
 
 <div align="center">
 
-<img src="assets/hero-t.png" alt="tmuxctl — the t command listing recent sessions (codex, backend-worker, docs) with shortcut hints" width="720">
+<img src="assets/hero-t.svg" alt="tmuxctl: the t command listing recent sessions (codex, backend-worker, docs) with shortcut hints" width="720">
 
 </div>
 
@@ -39,9 +39,10 @@ If you live in tmux, three things eventually bite you:
    session a number, and `t 2` gets you there.
 2. **One server, one blast radius.** Classic tmux runs a single server that
    owns every session. One runaway build or agent hits the machine's memory
-   ceiling, the kernel kills the server, and *all* your sessions — including
-   the innocent ones — disappear at once. tmuxctl gives every session its own
-   tmux server, its own socket, its own systemd unit, and its own memory cap.
+   ceiling, and the kernel kills the server. *All* your sessions disappear
+   at the same time, the innocent ones included. tmuxctl gives every session
+   its own tmux server, its own socket, its own systemd unit, and its own
+   memory cap.
 3. **Agents need babysitting.** An unattended coding session stalls and waits.
    tmuxctl sends it a message every 15 minutes until it isn't.
 
@@ -61,6 +62,8 @@ If you live in tmux, three things eventually bite you:
 | ⌨️ **Built for speed** | `t` alias, `tl` shorthand, `t -` from the current directory, bash completion |
 
 ## Quick start
+
+Install the tool, then jump straight in:
 
 ```bash
 uv tool install tmuxctl     # installs both `tmuxctl` and the short alias `t`
@@ -97,37 +100,39 @@ That's the whole loop: `t`, a number, and you're in.
 
 **Two prefixes, two meanings:**
 
-- `t codex` — attach only (fails if it doesn't exist)
-- `t :codex` — create-or-attach
+- `t codex`: attach only (fails if it doesn't exist)
+- `t :codex`: create-or-attach
 
 `t -` derives the name from the current directory, so `cd ~/git/workshops && t -`
 is `t create-or-attach git-workshops`. Everything after the dash becomes a
 suffix: `t - cy` → `git-workshops-cy`, and any command after it runs only on
 first creation (`t - cy` launches `cy` inside the new session).
 
-**Rename shorthand:** a leading dash is a suffix rule — `t rename 2 -cli` turns
+**Rename shorthand:** a leading dash is a suffix rule, so `t rename 2 -cli` turns
 `git-dataops-sop` into `git-dataops-cli`, deriving the prefix from the
 session's own working directory, not its current name.
 
 **Headless creation:** `t create-detached myproj -c ~/git/myproj` brings a
-memory-capped session into existence and returns immediately — for tools that
-attach over their own transport (tmux `-CC` control mode) and would otherwise
+memory-capped session into existence and returns immediately. Tools that
+attach over their own transport (tmux `-CC` control mode) would otherwise
 build raw, uncapped `new-session` commands. No-op if it already exists.
 
 ### Bash completion
+
+Enable shell completion:
 
 ```bash
 t --install-completion      # commands, session names, and :session shortcuts
 ```
 
-Working from this repo? `./install.sh` puts the checkout's `.venv/bin` on your
-`PATH` and adds the `tl` (= `t l`) alias to `~/.bashrc`.
+When you work from a checkout of this repo, `./install.sh` puts the checkout's
+`.venv/bin` on your `PATH` and adds the `tl` alias (`t l`) to `~/.bashrc`.
 
 ---
 
 ## Feed your agents
 
-Send text straight into a pane — inline or from a shared prompt file:
+Send text straight into a pane, inline or from a shared prompt file:
 
 ```bash
 t send codex --message "check status and continue"
@@ -143,8 +148,8 @@ t jobs add codex --every 15m --message "check status and continue"
 t jobs add rk-codex --every 30m --message-file prompts/rk-codex-progress.txt
 ```
 
-With `--message-file`, the path is stored and the file is read at send time —
-edit the file, future runs pick it up. Jobs live in a small SQLite database
+With `--message-file`, tmuxctl stores the path and reads the file at send time.
+Edit the file, and future runs pick it up. Jobs live in a small SQLite database
 (`~/.config/tmuxctl/tmuxctl.db`) along with the session event log.
 
 Run the scheduler:
@@ -153,9 +158,9 @@ Run the scheduler:
 t jobs daemon
 ```
 
-The daemon polls for due jobs and, every 60 seconds (`--health-interval`),
-checks session health — logging only when the unhealthy set *changes*, not on
-every tick. If a job fails 3 runs in a row it removes itself.
+The daemon polls for due jobs and checks session health every 60 seconds
+(`--health-interval`). It logs only when the unhealthy set *changes*, not on
+every tick. If a job fails 3 runs in a row, tmuxctl removes it.
 
 Manage jobs:
 
@@ -168,49 +173,53 @@ t jobs pause-current / resume-current    # target the session you're in
 ```
 
 > [!NOTE]
-> Jobs only fire while the daemon runs. To survive logout or reboot, keep it
-> under `systemd --user`, `launchd`, or `cron @reboot` — see
-> [Run the daemon as a service](#run-the-daemon-as-a-service).
+> Jobs only fire while the daemon runs. To survive logout or reboot, keep it under
+> `systemd --user`, `launchd`, or `cron @reboot` (see [Run the daemon as a service](#run-the-daemon-as-a-service)).
 
 ---
 
 ## Isolation & memory limits
 
-Classic tmux: one server process owns every session, so one kernel OOM kill
-takes them all down. tmuxctl splits that apart — two units per session, on
-purpose:
+In classic tmux, one server process owns every session, so one kernel OOM kill
+takes them all down.
 
-<img src="assets/units.png" alt="systemd unit tree: tmuxctl-server.slice with one uncapped service per session, robust.slice with one memory-capped scope per session" width="760">
+tmuxctl splits that apart into two units per session, on purpose:
 
 - The **server unit** holds only the multiplexer: no memory cap, shielded from
   the OOM killer.
-- The **scope** holds your shell and everything you launch from panes —
-  commands inherit its cgroup, so memory accounting covers the whole tree.
-  Crossing the soft `MemoryHigh` throttles and reclaims; only a hard climb to
+- The **scope** holds your shell and everything you launch from panes.
+  Commands inherit its cgroup, so memory accounting covers the whole tree.
+  Crossing the soft `MemoryHigh` throttles and reclaims. Only a hard climb to
   `MemoryMax` kills processes, and only inside that one scope.
 
+<img src="assets/units.svg" alt="systemd unit tree: tmuxctl-server.slice with one uncapped service per session, robust.slice with one memory-capped scope per session" width="760">
+
 New sessions default to `MemoryMax=12G`, `MemorySwapMax=8G`, and `MemoryHigh`
-at 85% of max. Override at creation (`t :my-session --mem 30G`) or change a
-live session:
+at 85% of max.
+
+Override at creation (`t :my-session --mem 30G`) or change a live session:
 
 ```bash
 t limit my-session --mem 30G --swap 8G --high 24G
 t limit :current --swap 12G
 ```
 
-This updates the systemd scope directly:
+Under the hood, `t limit` updates the systemd scope directly:
 
 ```bash
 systemctl --user set-property tmuxctl-my-session.scope MemoryHigh=24G MemoryMax=30G MemorySwapMax=8G
 ```
 
-Live changes aren't written back to config — use the config files below when
-you want future sessions to start with those limits. tmuxctl also warns when a
+tmuxctl doesn't write live changes back to config, so set the same limits in
+your config files for future sessions (see [Configuration](#configuration)).
+tmuxctl also warns when a
 new cap would push the sum of all live caps past 120% (`oversubscription_max_pct`)
-of RAM+swap; `t doctor` shows the same total.
+of RAM+swap. `t doctor` shows the same total.
 
 <details>
 <summary>What the create command actually looks like</summary>
+
+Creating a session runs a nested pair of `systemd-run` calls:
 
 ```bash
 systemd-run --user --unit=tmuxctl-server-my-session \
@@ -237,9 +246,9 @@ Full details on slices, scopes, and how the limits apply:
 
 ### Survive the session's own server dying
 
-Per-session servers stop one session from killing *another* — they don't stop
-a session's own server from dying if its workload blows the cap. tmux owns the
-pty, so whatever runs in the pane dies with it.
+Per-session servers stop one session from killing *another*, but they don't
+stop a session's own server from dying when its workload blows the cap.
+tmux owns the pty, so whatever runs in the pane dies with it.
 
 Opt in to wrapping the first pane behind `dtach`, so the shell keeps running
 even if the tmux server exits:
@@ -249,28 +258,33 @@ even if the tmux server exits:
 dtach_wrap = true
 ```
 
-Requires `dtach` on `PATH` (`apt install dtach`). If the flag is on but `dtach`
-is missing, the session starts as a normal shell and `t doctor` warns. Only
-the session's first pane is wrapped; panes you create later inside tmux aren't.
+Wrapping requires the `dtach` binary on `PATH`, which you install with
+`apt install dtach`. If the flag is on but `dtach` is missing, the session
+starts as a normal shell and `t doctor` warns. Only the session's first pane
+is wrapped, and panes you create later inside tmux aren't.
 
 <details>
 <summary>Troubleshooting: an occupied scope blocks a recreate of the same name</summary>
 
 `t kill` stops the session's scope with `systemctl --user stop`, freeing the
-unit name. Two things have to go wrong together to leave it occupied:
+unit name.
+
+Two things have to go wrong together to leave it occupied:
 
 1. the tmux server died uncleanly (crash or machine-wide OOM), so the normal
    kill path and its scope teardown never ran, **and**
 2. a disowned background process (`Xvfb`, a dev server, anything
-   `nohup`/`&`-launched) is still running inside that scope — the shell is
+   `nohup`/`&`-launched) is still running inside that scope. The shell is
    gone, but the stray keeps the cgroup alive.
 
 tmuxctl handles this instead of failing silently:
 
 - a dead or failed leftover unit is reset automatically and the name is reused
-- a surviving dtach master is treated as the session; recreate reattaches into it
+- a surviving dtach master is treated as the session, and recreate reattaches into it
 - any other live process holding the scope: create succeeds, but the new
   session starts **uncapped**, and tmuxctl prints how to reclaim the name
+
+To diagnose and reclaim, run:
 
 ```bash
 t salvage
@@ -286,9 +300,9 @@ t :my-session
 <details>
 <summary>Sessions created before per-session servers</summary>
 
-Older sessions still live on the shared default socket and keep working — but
-they share one server, so if it dies they all die. `t doctor` marks them
-`LEGACY`. Kill and recreate each one (`t kill <name>` then `t :<name>`, or
+Older sessions still live on the shared default socket and keep working, but
+they share one server: if it dies, they all die. `t doctor` marks them
+`LEGACY`, so kill and recreate each one (`t kill <name>` then `t :<name>`, or
 `t salvage --recreate`) to move it onto its own server.
 
 </details>
@@ -299,9 +313,9 @@ they share one server, so if it dies they all die. `t doctor` marks them
 
 ### `t doctor`
 
-One command for OOM risk: RAM, cgroup OOM kills, live memory limits,
-oversubscription, `dtach` wrapping, and whether each session is on its own
-server or still `LEGACY`.
+One command sums up the OOM risk of every session across RAM usage, cgroup OOM
+kills, live memory limits, and oversubscription. It also checks `dtach`
+wrapping and whether each session runs on its own server or is still `LEGACY`.
 
 ```bash
 t doctor
@@ -309,9 +323,11 @@ t doctor
 
 ### `t describe`
 
-What's actually running inside a session — per pane: process, working
-directory, cgroup; plus live RAM and CPU read from the session's cgroup, so
-the numbers cover the whole process tree, not just the shell:
+`t describe` shows what's running inside a session, pane by pane. RAM and CPU
+are read live from the session's cgroup, so the numbers cover the whole
+process tree, not just the shell.
+
+Run it by name, index, or `:current`:
 
 ```bash
 t describe codex        # by name
@@ -319,23 +335,25 @@ t describe 2            # by the index from `t list`
 t describe :current     # the session you're in
 ```
 
-<img src="assets/describe.png" alt="t describe codex — per-pane processes with working directories, plus scope, cgroup, live memory and CPU" width="680">
+<img src="assets/describe.svg" alt="t describe codex: per-pane processes with working directories, plus scope, cgroup, live memory and CPU" width="680">
 
-A session you didn't start through `t` is uncapped — `describe` says so and
-tells you which sessions are protected and which can still take the machine
+A session you didn't start through `t` is left uncapped. `describe` says so
+and tells you which sessions are protected and which can still take the machine
 down under memory pressure.
 
 ### `t salvage` — after a crash
 
-For every tmuxctl session: is there something live to reattach to, or
-something that needs recreating? It reads the durable event log instead of
-guessing from session names.
+For every tmuxctl session it reports whether something live is left to
+reattach to, or whether the session needs recreating. It reads the durable
+event log instead of guessing from session names.
 
 ```bash
 t salvage
 ```
 
-<img src="assets/salvage.png" alt="t salvage — per-session status: healthy, reattachable-dtach, gone, stale-work, needs-manual-reclaim" width="760">
+<img src="assets/salvage.svg" alt="t salvage - per-session status: healthy, reattachable-dtach, gone, stale-work, needs-manual-reclaim" width="760">
+
+To act on what it reports:
 
 ```bash
 t salvage --recreate            # recreate every gone / stale-work session
@@ -347,9 +365,10 @@ t salvage --kill-dead-cwd --yes
 
 ### The durable event log
 
-Create, kill, rename, limit, health-check, and capacity-warning events go into
-a log that survives the process and the cgroup dying — after a crash you can
-still see which sessions existed and how they were created.
+Create, kill, rename, and limit events go into one durable log. Health
+checks and capacity warnings land in the same log. It survives the process
+and the cgroup dying, so after a crash you can still see which sessions
+existed and how they were created.
 
 ```bash
 t sessions-log
@@ -373,9 +392,9 @@ t reap-clients                    # detach duplicate orphan -CC clients only
 t reap-clients --yes              # never kills a session, server, or interactive client
 ```
 
-The daemon's health check can also salvage for you: `t jobs daemon
---auto-salvage` (or `auto_salvage = true` in config) recreates `gone` /
-`stale-work` sessions automatically — `needs-manual-reclaim` stays manual.
+The daemon's health check can also salvage for you: `t jobs daemon --auto-salvage`
+(or `auto_salvage = true` in config) recreates `gone` / `stale-work` sessions
+automatically, while `needs-manual-reclaim` stays manual.
 
 ---
 
@@ -412,12 +431,14 @@ swap = "8G"
 high = "20G"
 ```
 
-`swap = "0"` gives hard no-swap behavior. `high` omitted tracks 85% of `mem`.
-`--mem` and config apply at creation time.
+`swap = "0"` gives hard no-swap behavior, and a missing `high` tracks 85% of
+`mem`. `--mem` and config apply at creation time.
 
 ---
 
 ## Installation
+
+Install from PyPI:
 
 ```bash
 uv tool install tmuxctl            # primary
@@ -455,8 +476,10 @@ RestartSec=5
 WantedBy=default.target
 ```
 
-Adjust `ExecStart` to wherever `tmuxctl` is installed — for an editable
-checkout, point it at `.venv/bin/tmuxctl`. Then:
+Adjust `ExecStart` to wherever `tmuxctl` is installed, or point it at
+`.venv/bin/tmuxctl` for an editable checkout.
+
+Then:
 
 ```bash
 systemctl --user daemon-reload
@@ -471,6 +494,8 @@ sudo loginctl enable-linger "$USER"
 
 ## Development
 
+Set up a checkout and run the tests:
+
 ```bash
 uv sync --dev
 uv run pytest
@@ -481,7 +506,7 @@ uv build
 
 <div align="center">
 
-**tmuxctl** — stop herding tmux sessions by hand.
+**tmuxctl**: stop herding tmux sessions by hand.
 
 [Issues](https://github.com/alexeygrigorev/tmuxctl/issues) · [PyPI](https://pypi.org/project/tmuxctl/) · [cgroups deep-dive](docs/cgroups.md)
 
